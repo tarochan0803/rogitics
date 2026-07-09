@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "description": "index3D_V1.0 3D benchmark fixtures. CONFIRMED_* cases are deterministic simulator fixtures until field-confirmed delivery routes are added.",
+  "cases": [
+    {
+      "id": "CONFIRMED_PASS_DEMO_CLEAR",
+      "name": "Demo route without perception blockers",
+      "classification": "CONFIRMED_PASS",
+      "route": "demo",
+      "vehiclePreset": "4t_flat",
+      "perception": false,
+      "expected": {
+        "statusAnyOf": ["CRUISE", "SLOW"],
+        "maxStopEventCount": 0,
+        "maxContactCount": 0,
+        "minFps": 20
+      }
+    },
+    {
+      "id": "CONFIRMED_FAIL_DEMO_LOW_CLEARANCE",
+      "name": "Demo route with synthetic low-clearance overhead blocker",
+      "classification": "CONFIRMED_FAIL",
+      "route": "demo",
+      "vehiclePreset": "4t_flat",
+      "fixture": "low-clearance",
+      "expected": {
+        "statusAnyOf": ["STOP"],
+        "minStopEventCount": 1,
+        "maxMinAllowedSpeedKmh": 0.1,
+        "minFps": 20
+      }
+    },
+    {
+      "id": "MEASURE_DEMO_PERCEPTION_FUSION",
+      "name": "Demo route with Phase 5 synthetic perception",
+      "classification": "MEASURE",
+      "route": "demo",
+      "vehiclePreset": "4t_flat",
+      "perception": true,
+      "expected": {
+        "minYoloCoverage": 0.001,
+        "minObstacleSolids": 2,
+        "minFps": 20
+      }
+    }
+  ]
+}

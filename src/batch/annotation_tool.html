@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Truck AI Annotation Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --accent: #0ea5e9;
+            --accent-glow: rgba(14, 165, 233, 0.3);
+            --ok: #22c55e;
+            --ng: #ef4444;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background-color: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        header {
+            padding: 0.75rem 2rem;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            flex-shrink: 0;
+        }
+
+        h1 { margin: 0; font-size: 1.1rem; font-weight: 800; color: var(--accent); letter-spacing: -0.02em; }
+
+        .main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .sidebar {
+            width: 300px;
+            flex-shrink: 0;
+            background: rgba(30, 41, 59, 0.5);
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            gap: 1rem;
+            overflow: hidden;
+        }
+
+        /* 2-panel content area */
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            padding: 10px;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        /* Left panel: screenshot */
+        .image-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .image-container {
+            flex: 1;
+            background: #000;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            position: relative;
+            min-height: 0;
+        }
+
+        #taskImage {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .overlay-info {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            padding: 6px 12px;
+            background: rgba(15, 23, 42, 0.85);
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(5px);
+        }
+
+        .nav-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+
+        .hint {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        /* Right panel: route canvas */
+        .map-panel {
+            width: 300px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-height: 0;
+        }
+
+        .canvas-container {
+            flex: 1;
+            background: #020a14;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            position: relative;
+            min-height: 0;
+        }
+
+        #routeCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .map-panel-label {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            text-align: center;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+
+        .vehicle-legend {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 4px;
+            flex-shrink: 0;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 8px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 6px;
+            font-size: 0.71rem;
+        }
+        .legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* Navigation buttons */
+        .btn-nav {
+            padding: 0.6rem 1.5rem;
+            border-radius: 999px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: var(--card-bg);
+            color: var(--text);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+        }
+        .btn-nav:hover { background: rgba(255,255,255,0.1); }
+
+        /* Header buttons */
+        .btn {
+            padding: 0.45rem 0.9rem;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.05);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.82rem;
+            font-family: inherit;
+            margin-left: 6px;
+        }
+        .btn:hover { background: rgba(255,255,255,0.12); }
+
+        /* Sidebar cards */
+        .stat-card {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 10px;
+            padding: 0.85rem;
+            flex-shrink: 0;
+        }
+        .stat-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .stat-val {
+            font-size: 1.3rem;
+            font-weight: 800;
+        }
+
+        /* Progress bar */
+        .progress-bar {
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 999px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 999px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        /* Task list */
+        .list-container {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-height: 0;
+        }
+        .task-item {
+            padding: 6px 8px;
+            border-radius: 5px;
+            font-size: 0.78rem;
+            cursor: pointer;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            transition: background 0.15s;
+        }
+        .task-item:hover { background: rgba(255,255,255,0.06); }
+        .task-item.done { color: var(--ok); }
+        .task-item.active {
+            background: rgba(14,165,233,0.15);
+            border-color: var(--accent);
+            color: var(--text);
+        }
+
+        /* Vehicle result cards */
+        .vehicle-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .veh-stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .veh-label { font-size: 0.68rem; color: var(--text-muted); font-weight: 800; }
+        .veh-result { font-weight: 700; margin: 3px 0; }
+
+        /* 最大通行車種ボタン */
+        .max-size-row {
+            display: flex;
+            gap: 3px;
+            margin-top: 8px;
+        }
+        .msz-btn {
+            flex: 1;
+            padding: 7px 2px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.05);
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.72rem;
+            font-weight: 700;
+            font-family: inherit;
+            transition: all 0.12s;
+            line-height: 1;
+        }
+        .msz-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+        .msz-btn.sel-none { background: var(--ng); border-color: var(--ng); color: white; }
+        .msz-btn.sel-ok   { background: var(--ok); border-color: var(--ok); color: white; }
+
+        /* Badge */
+        .badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+        .badge-ok { background: rgba(34,197,94,0.2); color: var(--ok); }
+        .badge-ng { background: rgba(239,68,68,0.2); color: var(--ng); }
+        .badge-unknown { background: rgba(100,116,139,0.2); color: var(--text-muted); }
+
+        /* Fallback panel */
+        .fallback-panel {
+            margin: 6px 1.5rem 0;
+            padding: 8px 12px;
+            border: 1px dashed rgba(255,255,255,0.2);
+            border-radius: 8px;
+            display: none;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            background: rgba(255,255,255,0.03);
+            flex-shrink: 0;
+        }
+        .fallback-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .fallback-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 700;
+        }
+        .fallback-panel input[type="file"] {
+            font-size: 0.78rem;
+            color: var(--text);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>TRUCK AI ANNOTATOR (MULTI-SIZE)</h1>
+        <div>
+            <button id="loadFolderBtn" class="btn">📂 出力フォルダを選択</button>
+            <button id="exportBtn" class="btn" style="background: var(--accent); color: white;">💾 Export</button>
+        </div>
+    </header>
+
+    <div id="fallbackPanel" class="fallback-panel">
+        <div class="fallback-item">
+            <div class="fallback-label">result.jsonl</div>
+            <input id="resultFileInput" type="file" accept=".jsonl" style="display:none" />
+            <label for="resultFileInput" class="btn" style="cursor:pointer;margin:0;">選択</label>
+            <span id="resultFileName" style="font-size:0.75rem;color:var(--text-muted)">未選択</span>
+        </div>
+        <div class="fallback-item">
+            <div class="fallback-label">画像フォルダ</div>
+            <input id="imageFolderInput" type="file" webkitdirectory multiple style="display:none" />
+            <label for="imageFolderInput" class="btn" style="cursor:pointer;margin:0;">選択</label>
+            <span id="imageFolderName" style="font-size:0.75rem;color:var(--text-muted)">未選択</span>
+        </div>
+        <button id="loadFilesBtn" class="btn" style="background:var(--accent);color:white;">読み込む</button>
+    </div>
+
+    <div class="main-layout">
+        <div class="sidebar">
+            <div class="stat-card">
+                <div class="stat-label">Progress</div>
+                <div class="stat-val" id="progressVal">0 / 0</div>
+                <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+            </div>
+
+            <div id="currentTaskInfo" class="stat-card">
+                <div class="stat-label">Address</div>
+                <div id="taskAddress" style="font-size:0.85rem;margin-bottom:10px;font-weight:700;">-</div>
+
+                <div class="stat-label">通行可能最大車種</div>
+                <div class="max-size-row" id="maxSizeRow">
+                    <button class="msz-btn" data-idx="-1" onclick="setMaxOkSize(-1)">全NG</button>
+                    <button class="msz-btn" data-idx="0"  onclick="setMaxOkSize(0)">2t</button>
+                    <button class="msz-btn" data-idx="1"  onclick="setMaxOkSize(1)">3t</button>
+                    <button class="msz-btn" data-idx="2"  onclick="setMaxOkSize(2)">4t</button>
+                    <button class="msz-btn" data-idx="3"  onclick="setMaxOkSize(3)">10t</button>
+                </div>
+
+                <div class="stat-label" style="margin-top:10px;">AI Judgements</div>
+                <div class="vehicle-grid" id="vehicleResults"></div>
+            </div>
+
+            <div class="list-container" id="taskList"></div>
+        </div>
+
+        <div class="content">
+            <!-- Left: screenshot -->
+            <div class="image-panel">
+                <div class="image-container">
+                    <img id="taskImage" src="" alt="フォルダを選択してください">
+                    <div class="overlay-info" id="overlayInfo" style="display:none;">
+                        <div id="overlayId" style="font-weight:800;font-size:1.1rem;">#1</div>
+                    </div>
+                </div>
+                <div class="nav-row">
+                    <button id="btnPrev" class="btn-nav">← Prev</button>
+                    <button id="btnNext" class="btn-nav">Next →</button>
+                </div>
+                <div class="hint">← / → : 移動 &nbsp;|&nbsp; 0=全NG &nbsp; 1=2t &nbsp; 2=3t &nbsp; 3=4t &nbsp; 4=10t(全OK) → 自動次へ</div>
+            </div>
+
+            <!-- Right: route canvas -->
+            <div class="map-panel">
+                <div class="canvas-container">
+                    <canvas id="routeCanvas"></canvas>
+                </div>
+                <div class="map-panel-label">経路マップ</div>
+                <div class="vehicle-legend" id="vehicleLegend"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let tasks = [];
+        let currentIndex = -1;
+        const presets = ['2t_flat', '3t_flat', '4t_flat', '10t_unic'];
+        const presetLabels = { '2t_flat': '2t', '3t_flat': '3t', '4t_flat': '4t', '10t_unic': '10t' };
+        const imageCache = {};
+
+        const $ = (id) => document.getElementById(id);
+
+        // File System Access API サポート確認
+        const supportsDirPicker = !!window.showDirectoryPicker;
+        if (!supportsDirPicker) {
+            $('fallbackPanel').style.display = 'flex';
+        }
+
+        // ---- ファイル選択フィードバック ----
+        $('resultFileInput').addEventListener('change', () => {
+            const f = $('resultFileInput').files[0];
+            $('resultFileName').textContent = f ? f.name : '未選択';
+        });
+        $('imageFolderInput').addEventListener('change', () => {
+            const files = $('imageFolderInput').files;
+            $('imageFolderName').textContent = files && files.length ? `${files.length} ファイル` : '未選択';
+        });
+
+        // ---- キャッシュ管理 ----
+        function clearImageCache() {
+            for (const key of Object.keys(imageCache)) {
+                URL.revokeObjectURL(imageCache[key]);
+                delete imageCache[key];
+            }
+        }
+
+        // ---- JSONL パース ----
+        function parseTasks(jsonlText) {
+            const trimmed = (jsonlText || '').trim();
+            if (!trimmed) return [];
+            const results = [];
+            for (const line of trimmed.split('\n')) {
+                if (!line.trim()) continue;
+                try {
+                    const json = JSON.parse(line);
+                    if (!json.annotations) {
+                        json.annotations = {};
+                        presets.forEach(p => json.annotations[p] = null);
+                    }
+                    // results が未定義のタスク（エラー行）を正規化
+                    if (!json.results) json.results = {};
+                    results.push(json);
+                } catch (e) {
+                    console.warn('[parseTasks] JSON解析失敗:', line.slice(0, 80), e.message);
+                }
+            }
+            return results;
+        }
+
+        function setTasksFromJsonl(jsonlText) {
+            tasks = parseTasks(jsonlText);
+            currentIndex = tasks.length ? 0 : -1;
+            updateUI();
+            renderList();
+            if (tasks.length === 0) {
+                alert('タスクが見つかりませんでした。result.jsonl を確認してください。');
+            }
+        }
+
+        // ---- 画像キャッシュ（フォルダ選択） ----
+        async function cacheImagesFromDirHandle(dirHandle) {
+            clearImageCache();
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file' && /\.(jpg|jpeg|png|webp)$/i.test(entry.name)) {
+                    try {
+                        const fh = await dirHandle.getFileHandle(entry.name);
+                        const file = await fh.getFile();
+                        imageCache[entry.name] = URL.createObjectURL(file);
+                    } catch (e) { /* skip */ }
+                }
+            }
+        }
+
+        // ---- 画像キャッシュ（フォールバック） ----
+        function cacheImagesFromFileList(fileList) {
+            clearImageCache();
+            if (!fileList || fileList.length === 0) return;
+            Array.from(fileList).forEach(file => {
+                if (/\.(jpg|jpeg|png|webp)$/i.test(file.name)) {
+                    const url = URL.createObjectURL(file);
+                    imageCache[file.name] = url;
+                    if (file.webkitRelativePath) {
+                        imageCache[file.webkitRelativePath] = url;
+                    }
+                }
+            });
+        }
+
+        // ---- フォルダ選択（メイン） ----
+        $('loadFolderBtn').addEventListener('click', async () => {
+            if (!supportsDirPicker) {
+                $('fallbackPanel').style.display = 'flex';
+                alert('この環境ではフォルダ選択が使えません。下のファイル選択を使ってください。');
+                return;
+            }
+            let dirHandle;
+            try {
+                dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+            } catch (e) {
+                return; // キャンセル
+            }
+
+            let jsonlText = '';
+            try {
+                const fh = await dirHandle.getFileHandle('result.jsonl');
+                const file = await fh.getFile();
+                jsonlText = await file.text();
+            } catch (e) {
+                alert('result.jsonl が見つかりません。正しい出力フォルダを選択してください。');
+                return;
+            }
+
+            await cacheImagesFromDirHandle(dirHandle);
+            setTasksFromJsonl(jsonlText);
+        });
+
+        // ---- フォールバック読み込み ----
+        $('loadFilesBtn').addEventListener('click', async () => {
+            const resultFile = $('resultFileInput').files && $('resultFileInput').files[0];
+            if (!resultFile) {
+                alert('result.jsonl を選択してください。');
+                return;
+            }
+            const jsonlText = await resultFile.text();
+            cacheImagesFromFileList($('imageFolderInput').files);
+            setTasksFromJsonl(jsonlText);
+        });
+
+        // ---- メインUI更新 ----
+        function updateUI() {
+            if (currentIndex < 0 || currentIndex >= tasks.length) return;
+            const task = tasks[currentIndex];
+
+            // スクリーンショット
+            const baseName = task.imageFile ? task.imageFile.split(/[\\/]/).pop() : '';
+            const imgSrc = imageCache[task.imageFile] || imageCache[baseName] || task.imageFile || '';
+            $('taskImage').src = imgSrc;
+
+            // 住所
+            $('taskAddress').textContent = (task.input && task.input.address) || task.errorMessage || '(エラー)';
+
+            // 進捗
+            const annotatedCount = tasks.filter(t => Object.values(t.annotations).some(v => v !== null)).length;
+            $('progressVal').textContent = `${annotatedCount} / ${tasks.length}`;
+            $('progressFill').style.width = `${tasks.length ? annotatedCount / tasks.length * 100 : 0}%`;
+
+            // タスクID表示
+            $('overlayInfo').style.display = 'block';
+            $('overlayId').textContent = `#${task.task_id}`;
+
+            // 最大通行車種ボタンのハイライト更新
+            const curMaxIdx = getCurrentMaxIdx(task.annotations);
+            document.querySelectorAll('#maxSizeRow .msz-btn').forEach(btn => {
+                const idx = parseInt(btn.dataset.idx);
+                btn.classList.remove('sel-ok', 'sel-none');
+                if (curMaxIdx === null) return; // 未アノテーション
+                if (idx === -1 && curMaxIdx === -1) { btn.classList.add('sel-none'); }
+                else if (idx >= 0 && idx <= curMaxIdx) { btn.classList.add('sel-ok'); }
+            });
+
+            // 車種別AI判定（表示のみ）
+            const resultsDiv = $('vehicleResults');
+            resultsDiv.innerHTML = '';
+            presets.forEach(p => {
+                const res = (task.results && task.results[p]) || { status: 'UNKNOWN' };
+                const anno = task.annotations[p];
+                const aiClass = res.status === 'OK' ? 'badge-ok' : res.status === 'NG' ? 'badge-ng' : 'badge-unknown';
+                const annoColor = anno === 'OK' ? 'var(--ok)' : anno === 'NG' ? 'var(--ng)' : 'var(--text-muted)';
+
+                const card = document.createElement('div');
+                card.className = 'veh-stat-card';
+                card.innerHTML = `
+                    <div class="veh-label">${presetLabels[p] || p}</div>
+                    <div style="display:flex;gap:4px;align-items:center;margin-top:3px;">
+                        <span class="badge ${aiClass}" title="AI判定">${res.status}</span>
+                        <span style="font-size:0.7rem;font-weight:700;color:${annoColor};margin-left:auto">${anno || '―'}</span>
+                    </div>
+                `;
+                resultsDiv.appendChild(card);
+            });
+
+            // タスクリストのハイライト更新
+            document.querySelectorAll('.task-item').forEach((el, i) => {
+                el.classList.toggle('active', i === currentIndex);
+                if (i === currentIndex) el.scrollIntoView({ block: 'nearest' });
+            });
+
+            // 経路キャンバス描画
+            drawRouteCanvas(task);
+            updateVehicleLegend(task);
+        }
+
+        // ---- 最大通行車種から現在のインデックスを取得 ----
+        function getCurrentMaxIdx(annotations) {
+            const annotated = presets.some(p => annotations[p] !== null);
+            if (!annotated) return null; // 未アノテーション
+            let maxIdx = -1;
+            presets.forEach((p, i) => { if (annotations[p] === 'OK') maxIdx = i; });
+            return maxIdx; // -1=全NG, 0-3=最大OK車種インデックス
+        }
+
+        // ---- 最大通行車種を設定（それ以下OK・それ以上NG）----
+        window.setMaxOkSize = (idx) => {
+            if (currentIndex < 0) return;
+            presets.forEach((p, i) => {
+                tasks[currentIndex].annotations[p] = (i <= idx) ? 'OK' : 'NG';
+            });
+            updateUI();
+            renderList();
+            // 次のタスクへ自動移動
+            if (currentIndex < tasks.length - 1) {
+                setTimeout(() => { currentIndex++; updateUI(); }, 150);
+            }
+        };
+
+        // ---- タスクリスト描画 ----
+        function renderList() {
+            const list = $('taskList');
+            list.innerHTML = '';
+            tasks.forEach((task, i) => {
+                const div = document.createElement('div');
+                const isDone = Object.values(task.annotations).some(v => v !== null);
+                div.className = `task-item ${isDone ? 'done' : ''} ${i === currentIndex ? 'active' : ''}`;
+                const addr = (task.input && task.input.address) || '(エラー)';
+                div.textContent = `${task.task_id}: ${addr.substring(0, 18)}`;
+                div.onclick = () => { currentIndex = i; updateUI(); };
+                list.appendChild(div);
+            });
+        }
+
+        // ---- ナビゲーション ----
+        $('btnNext').onclick = () => { if (currentIndex < tasks.length - 1) { currentIndex++; updateUI(); } };
+        $('btnPrev').onclick = () => { if (currentIndex > 0) { currentIndex--; updateUI(); } };
+
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            if (e.key === 'ArrowRight') $('btnNext').click();
+            if (e.key === 'ArrowLeft') $('btnPrev').click();
+            // 0=全NG, 1=2tまでOK, 2=3tまでOK, 3=4tまでOK, 4=全OK(10t)
+            if (['0','1','2','3','4'].includes(e.key) && currentIndex >= 0) {
+                setMaxOkSize(parseInt(e.key) - 1); // 0→-1(全NG), 1→0(2t), ...
+            }
+        });
+
+        // ---- エクスポート ----
+        $('exportBtn').onclick = () => {
+            if (tasks.length === 0) return;
+            const output = tasks.map(t => JSON.stringify(t)).join('\n');
+            const blob = new Blob([output], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'annotated_result.jsonl';
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+        };
+
+        // ================================================================
+        // 経路キャンバス描画
+        // ================================================================
+        function drawRouteCanvas(task) {
+            const canvas = $('routeCanvas');
+            const container = canvas.parentElement;
+            const W = canvas.width = container.clientWidth || 300;
+            const H = canvas.height = container.clientHeight || 400;
+            const ctx = canvas.getContext('2d');
+
+            // 背景
+            ctx.fillStyle = '#020a14';
+            ctx.fillRect(0, 0, W, H);
+
+            const route = task && task.route;
+            if (!route || route.length < 2) {
+                ctx.fillStyle = '#334155';
+                ctx.font = 'bold 12px Inter, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('経路データなし', W / 2, H / 2 - 10);
+                ctx.font = '10px Inter, sans-serif';
+                ctx.fillStyle = '#475569';
+                ctx.fillText('(バッチ再実行で取得可)', W / 2, H / 2 + 10);
+                return;
+            }
+
+            // ---- 座標変換のセットアップ ----
+            // バウンディングボックスは経路点のみで計算（道路が広範囲に広がってズームアウトするのを防ぐ）
+            const roadSegs = task.roadSegments || [];
+
+            const lats = route.map(p => p.lat);
+            const lngs = route.map(p => p.lng);
+            const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+            const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+
+            const PAD = 36;
+            const cosLat = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
+            const spanLng = (maxLng - minLng) * cosLat || 0.00001;
+            const spanLat = (maxLat - minLat) || 0.00001;
+
+            const scaleX = (W - PAD * 2) / spanLng;
+            const scaleY = (H - PAD * 2) / spanLat;
+            const scale = Math.min(scaleX, scaleY);
+
+            const offX = (W - PAD * 2 - spanLng * scale) / 2;
+            const offY = (H - PAD * 2 - spanLat * scale) / 2;
+
+            const toX = (lng) => PAD + offX + (lng - minLng) * cosLat * scale;
+            const toY = (lat) => H - PAD - offY - (lat - minLat) * scale;
+
+            // ---- グリッド ----
+            ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const x = PAD + offX + (spanLng * scale / 4) * i;
+                const y = H - PAD - offY - (spanLat * scale / 4) * i;
+                ctx.beginPath(); ctx.moveTo(x, PAD + offY); ctx.lineTo(x, H - PAD - offY); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(PAD + offX, y); ctx.lineTo(W - PAD - offX, y); ctx.stroke();
+            }
+
+            // ---- 道路セグメント（幅ライン） ----
+            // scale の単位は px/度。1度 ≒ 111000m なので metersPerPx = 111000 / scale
+            const metersPerPx = 111000 / scale;
+            for (const seg of roadSegs) {
+                if (!seg.coords || seg.coords.length < 2) continue;
+                const w = seg.width;
+
+                // 幅の色分け: 5.5m=緑(10t可), 4.0m=黄緑(4t可), 3.0m=黄(3t可), 2.5m=橙(2t可), null=グレー
+                const roadColor = !w      ? 'rgba(100,116,139,0.5)'
+                    : w >= 5.5 ? 'rgba(34,197,94,0.65)'
+                    : w >= 4.0 ? 'rgba(163,230,53,0.65)'
+                    : w >= 3.0 ? 'rgba(251,191,36,0.65)'
+                    : w >= 2.5 ? 'rgba(251,146,60,0.65)'
+                    :            'rgba(248,113,113,0.65)';
+
+                // ライン幅 = 道路幅(m) / metersPerPx、最小2px・最大30px
+                const lineW = w ? Math.max(2, Math.min(30, w / metersPerPx)) : 2;
+
+                ctx.beginPath();
+                ctx.moveTo(toX(seg.coords[0].lng), toY(seg.coords[0].lat));
+                for (let i = 1; i < seg.coords.length; i++) {
+                    ctx.lineTo(toX(seg.coords[i].lng), toY(seg.coords[i].lat));
+                }
+                ctx.strokeStyle = roadColor;
+                ctx.lineWidth = lineW;
+                ctx.lineJoin = 'round';
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+
+            // ---- 経路ライン（道路の上に重ねる） ----
+            const results = task.results || {};
+            const ngCount = presets.filter(p => (results[p] && results[p].status) === 'NG').length;
+            const routeColor = ngCount === 0 ? '#22d3ee'
+                             : ngCount <= 1 ? '#a3e635'
+                             : ngCount <= 2 ? '#fbbf24'
+                             : '#f87171';
+
+            ctx.beginPath();
+            ctx.moveTo(toX(route[0].lng), toY(route[0].lat));
+            for (let i = 1; i < route.length; i++) {
+                ctx.lineTo(toX(route[i].lng), toY(route[i].lat));
+            }
+            ctx.shadowColor = routeColor;
+            ctx.shadowBlur = 5;
+            ctx.strokeStyle = routeColor;
+            ctx.lineWidth = 2;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // ---- スタート(S) / ゴール(G) マーカー ----
+            const sx = toX(route[0].lng), sy = toY(route[0].lat);
+            ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+            ctx.fillStyle = '#22c55e'; ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 8px Inter, sans-serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('S', sx, sy);
+
+            const gx = toX(route[route.length - 1].lng), gy = toY(route[route.length - 1].lat);
+            ctx.beginPath(); ctx.arc(gx, gy, 8, 0, Math.PI * 2);
+            ctx.fillStyle = '#ef4444'; ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText('G', gx, gy);
+
+            // ---- 距離・道路幅凡例 ----
+            const firstRes = results['4t_flat'] || results['2t_flat'] || null;
+            ctx.font = '9px Inter, sans-serif';
+            ctx.fillStyle = 'rgba(148,163,184,0.75)';
+            ctx.textAlign = 'right'; ctx.textBaseline = 'bottom';
+            if (firstRes && firstRes.distance) {
+                ctx.fillText(`経路 ${Math.round(firstRes.distance)}m`, W - 6, H - 6);
+            }
+            // 道路幅凡例（右上）
+            if (roadSegs.length > 0) {
+                const legend = [
+                    { color: '#22c55e', label: '≥5.5m' },
+                    { color: '#a3e635', label: '≥4.0m' },
+                    { color: '#fbbf24', label: '≥3.0m' },
+                    { color: '#fb923c', label: '<3.0m' },
+                ];
+                ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+                let lx = 6, ly = 6;
+                for (const l of legend) {
+                    ctx.fillStyle = l.color;
+                    ctx.fillRect(lx, ly, 8, 8);
+                    ctx.fillStyle = 'rgba(148,163,184,0.8)';
+                    ctx.fillText(l.label, lx + 11, ly);
+                    ly += 13;
+                }
+            }
+        }
+
+        // ---- 車種凡例（Canvasの下） ----
+        function updateVehicleLegend(task) {
+            const legend = $('vehicleLegend');
+            legend.innerHTML = '';
+            if (!task) return;
+            const results = task.results || {};
+            presets.forEach(p => {
+                const res = results[p] || { status: 'UNKNOWN' };
+                const color = res.status === 'OK' ? '#22c55e'
+                            : res.status === 'NG' ? '#ef4444'
+                            : '#475569';
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `
+                    <div class="legend-dot" style="background:${color}"></div>
+                    <span>${presetLabels[p]}</span>
+                    <span style="margin-left:auto;font-weight:700;color:${color};font-size:0.7rem">${res.status}</span>
+                `;
+                legend.appendChild(item);
+            });
+        }
+
+        // ウィンドウリサイズ時に再描画
+        window.addEventListener('resize', () => {
+            if (currentIndex >= 0 && currentIndex < tasks.length) {
+                drawRouteCanvas(tasks[currentIndex]);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "description": "Golden route benchmark fixtures for LOGISTICS_OS. Replace or extend these seed cases after visually confirming real delivery routes.",
+  "cases": [
+    {
+      "id": "tokyo-station-short-4t",
+      "name": "Tokyo Station short urban route / 4t",
+      "vehiclePreset": "4t_flat",
+      "driverSkill": 1.0,
+      "endpoints": [
+        { "lat": 35.681236, "lng": 139.767125, "name": "start" },
+        { "lat": 35.683852, "lng": 139.769288, "name": "goal" }
+      ],
+      "expected": {
+        "overallStatusAnyOf": ["PASS", "CONDITIONAL", "NG"],
+        "passable": null
+      },
+      "notes": "Seed fixture. Lock expected status/passable only after this route is accepted as a real golden route."
+    },
+    {
+      "id": "nihonbashi-local-10t",
+      "name": "Nihonbashi local access / 10t",
+      "vehiclePreset": "10t_unic",
+      "driverSkill": 1.0,
+      "endpoints": [
+        { "lat": 35.684095, "lng": 139.773522, "name": "start" },
+        { "lat": 35.686327, "lng": 139.775094, "name": "goal" }
+      ],
+      "expected": {
+        "overallStatusAnyOf": ["PASS", "CONDITIONAL", "NG"],
+        "passable": null
+      },
+      "notes": "Seed fixture for heavier vehicle behavior. Convert to a strict golden after field/visual confirmation."
+    }
+  ]
+}

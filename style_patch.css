@@ -1,0 +1,121 @@
+/* =========================================
+   v7.6 ULTIMATE PRO PATCH (FINAL)
+   Overrides: ALL previous CSS via new specific classes
+   ========================================= */
+
+/* --- HERO BUTTON: SOLID ENGINEERING BLUE --- */
+/* Target both ID and new Class for maximum specificity */
+#runDeliveryAssessment,
+.assess-action-btn {
+    /* Resetting everything */
+    all: unset;
+
+    /* Flex Layout */
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-sizing: border-box !important;
+
+    /* Dimensions */
+    height: 40px !important;
+    padding: 0 24px !important;
+    min-width: 150px !important;
+
+    /* Appearance */
+    background-color: #2563eb !important;
+    /* Solid Royal Blue */
+    background-image: none !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 4px !important;
+
+    /* Typography */
+    color: #ffffff !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.02em !important;
+    text-shadow: none !important;
+
+    /* Effects */
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3) !important;
+    cursor: pointer !important;
+    transition: background-color 0.2s, transform 0.1s !important;
+
+    /* Positioning */
+    margin-top: 0 !important;
+}
+
+#runDeliveryAssessment:hover,
+.assess-action-btn:hover {
+    background-color: #1d4ed8 !important;
+    /* Darker blue */
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+#runDeliveryAssessment:active,
+.assess-action-btn:active {
+    background-color: #1e40af !important;
+    transform: translateY(1px) !important;
+}
+
+#runDeliveryAssessment svg,
+.assess-action-btn svg {
+    stroke: #ffffff !important;
+    width: 18px !important;
+    height: 18px !important;
+    margin-right: 8px !important;
+    display: block !important;
+}
+
+/* --- TOP BAR CONTAINER --- */
+#topBar {
+    padding: 12px 24px !important;
+    height: auto !important;
+    min-height: 64px !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    gap: 12px !important;
+    align-items: center !important;
+    pointer-events: none !important;
+}
+
+#topBar>* {
+    pointer-events: auto !important;
+}
+
+/* --- TOP BAR ELEMENTS: UNIFIED LOOK --- */
+.top-search,
+.top-vehicle-wrapper,
+.top-actions .ctrl-btn.icon {
+    background: #0f172a !important;
+    /* Slate-900 Opaque */
+    border: 1px solid #334155 !important;
+    border-radius: 4px !important;
+    height: 40px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+/* --- HUD CARDS (Top Left) --- */
+.hud-card {
+    background: rgba(15, 23, 42, 0.98) !important;
+    border: 1px solid #334155 !important;
+    border-left: 4px solid #0ea5e9 !important;
+    /* Accent Blue */
+    border-radius: 4px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6) !important;
+    padding: 10px 14px !important;
+    min-width: 140px !important;
+    backdrop-filter: none !important;
+}
+
+.hud-val {
+    color: #ffffff !important;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 16px !important;
+    text-shadow: none !important;
+}

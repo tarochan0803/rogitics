@@ -1,0 +1,1489 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LOGISTICS OS v9.0 Workbench</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="stylesheet" href="https://unpkg.com/cesium@1.120.0/Build/Cesium/Widgets/widgets.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="./style6.css" />
+  <link rel="stylesheet" href="./style_patch.css" />
+    <link rel="stylesheet" href="./index8.2.css" />
+    <link rel="stylesheet" href="./index9.0.css" />
+
+  <script>
+    window.TRUCK_DEFAULT_VIEW_MODE = '2d';
+    window.TRUCK_DEFAULT_PHOTOREALISTIC = false;
+    window.USE_GOOGLE_2D_TILES = true;
+  </script>
+</head>
+
+<body class="index9">
+  <!-- Full-screen map -->
+  <div id="map"></div>
+
+  <!-- ===== SIDEBAR (brand / search / HUD / workflow) ===== -->
+  <div id="sidebar">
+
+    <!-- Brand -->
+    <div id="sidebarBrand">
+      LOGISTICS<span class="accent">OS</span><span class="sb-version">v9.0 WB</span>
+    </div>
+
+    <!-- Scrollable content -->
+    <div id="sidebarContent">
+
+      <!-- ===== SERVER PANEL ===== -->
+      <div id="serverPanel">
+        <div class="srv-header">
+          <span class="srv-title">SERVERS</span>
+          <span class="srv-all-ok" id="srvAllOk" style="display:none;">✅ 準備完了</span>
+        </div>
+        <div class="srv-row" id="srvRowYolo">
+          <span class="srv-dot" id="srvDotYolo"></span>
+          <span class="srv-name">YOLO</span>
+          <span class="srv-label" id="srvLabelYolo">確認中…</span>
+          <button class="ctrl-btn ghost small" id="srvStartYolo" type="button">起動</button>
+        </div>
+      </div>
+
+      <!-- Operation Guide -->
+      <details class="sp-section op-guide" id="operationGuide">
+        <summary>📖 操作ガイド</summary>
+        <div class="sp-inner">
+          <ol class="op-guide-list">
+            <li><span class="og-step">①</span> <b>道路取得</b> — 上部ボタンで地図の道路データを読み込む</li>
+            <li><span class="og-step">②</span> <b>車両選択</b> — 上部タブでトラック種別を選ぶ</li>
+            <li><span class="og-step">③</span> <b>端点追加</b> — 地図をクリックして出発地・目的地を2点以上追加</li>
+            <li><span class="og-step">④</span> <b>搬入判定を実行</b> — 上部ボタンで通行可否を自動判定</li>
+            <li><span class="og-step">⑤</span> <b>レポート出力</b> — 結果パネルの「レポート出力」で帳票を生成</li>
+          </ol>
+          <div class="og-hint">端点リストの ↑↓ は順序変更、× は削除</div>
+        </div>
+      </details>
+
+      <!-- Search & Conversion -->
+      <div id="floatSearch">
+        <div class="fs-row">
+          <input class="ctrl-input" type="text" id="search-input" placeholder="住所・施設名を検索" />
+          <button class="ctrl-btn accent" id="search-button" type="button" title="検索">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+              style="pointer-events:none;">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />　
+            </svg>
+          </button>
+        </div>
+        <details open>
+          <summary>▸ 住所 → 地番に変換</summary>
+          <div class="fs-convert">
+            <input class="ctrl-input" type="text" id="bluemap-input" placeholder="住所を入力 (例: 東京都千代田区1-1-1)" />
+            <div class="fs-convert-row">
+              <button class="ctrl-btn accent" id="bluemap-button">🔍 変換</button>
+              <input class="ctrl-input" type="text" id="bluemap-output" readonly placeholder="地番" />
+            </div>
+            <div id="chibanStatus" style="font-size:10px;color:#64748b;white-space:pre-wrap;"></div>
+          </div>
+        </details>
+      </div>
+
+      <!-- HUD Cards -->
+      <div id="hud">
+        <div id="hudFeasCard" class="hud-card">
+          <div class="hud-label">FEASIBILITY</div>
+          <div class="hud-val" id="hudFeasValue">READY</div>
+          <div class="hud-sub" id="hudFeasSub">判定待ち</div>
+        </div>
+        <div id="hudCollisionCard" class="hud-card">
+          <div class="hud-label">COLLISION</div>
+          <div class="hud-val" id="hudCollisionValue">SAFE</div>
+          <div class="hud-sub" id="hudCollisionSub">衝突 0/0</div>
+        </div>
+        <div id="hudWidthCard" class="hud-card hidden">
+          <div class="hud-label">ROAD WIDTH</div>
+          <div class="hud-val" id="hudWidthValue">-</div>
+          <div class="hud-sub" id="hudWidthSub">編集 OFF</div>
+        </div>
+      </div>
+
+      <!-- Workflow Dock -->
+      <div id="workflowDock" class="workflow-dock">
+        <div class="wf-head">
+          <strong>WORKFLOW</strong>
+          <span id="wfStepLabel">ステップ 1 / 5</span>
+          <!-- Toggle always visible in header (not hidden when collapsed) -->
+          <button class="ctrl-btn ghost icon small" id="wfDockToggle" type="button" title="折りたたむ / 展開">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+        <ul class="wf-list">
+          <li class="wf-item active" id="wfStep1">
+            <span class="wf-dot">1</span>
+            <span class="wf-label">道路データ取得</span>
+            <span class="wf-state" id="wfState1">未読込</span>
+          </li>
+          <li class="wf-item" id="wfStep2">
+            <span class="wf-dot">2</span>
+            <span class="wf-label">車両選択</span>
+            <span class="wf-state" id="wfState2">2tトラック</span>
+          </li>
+          <li class="wf-item" id="wfStep3">
+            <span class="wf-dot">3</span>
+            <span class="wf-label">経路設定</span>
+            <span class="wf-state" id="wfState3">未設定</span>
+          </li>
+          <li class="wf-item" id="wfStep4">
+            <span class="wf-dot">4</span>
+            <span class="wf-label">判定実行</span>
+            <span class="wf-state" id="wfState4">待機</span>
+          </li>
+          <li class="wf-item" id="wfStep5">
+            <span class="wf-dot">5</span>
+            <span class="wf-label">結果確認</span>
+            <span class="wf-state" id="wfState5">-</span>
+          </li>
+        </ul>
+        <div class="wf-hint" id="wfHint">上部の「道路取得」で道路データを読み込み、経路作成と判定を進めてください。</div>
+        <div class="wf-step-actions" id="wfStepActions" aria-live="polite">
+          <button class="ctrl-btn accent wide wf-primary-action" id="wfNextAction" type="button">道路データを取得</button>
+          <div class="wf-secondary-actions" id="wfSecondaryActions">
+            <button class="ctrl-btn ghost small" id="wfOpenSettings" type="button">設定を開く</button>
+            <button class="ctrl-btn ghost small" id="wfToggleManual" type="button">端点追加</button>
+            <button class="ctrl-btn danger-ghost small" id="wfClearEndpoints" type="button">端点クリア</button>
+          </div>
+          <div class="wf-vehicle-actions" id="wfVehicleActions" aria-label="車両クイック選択">
+            <button class="ctrl-btn ghost small" type="button" data-vehicle-short="2t">2t</button>
+            <button class="ctrl-btn ghost small" type="button" data-vehicle-short="3t">3t</button>
+            <button class="ctrl-btn ghost small" type="button" data-vehicle-short="4t">4t</button>
+            <button class="ctrl-btn ghost small" type="button" data-vehicle-short="10t">10t</button>
+            <button class="ctrl-btn ghost small" type="button" data-vehicle-short="custom">自由</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /#sidebarContent -->
+  </div><!-- /#sidebar -->
+
+  <!-- ===== TOP BAR ===== -->
+  <header id="topBar">
+    <!-- Vehicle Cards (v9.0) -->
+    <div class="top-vehicle-wrapper">
+      <div class="veh-cards" id="vehCardRow" role="radiogroup" aria-label="車両プリセット選択">
+        <button class="veh-card active" data-veh="2t" type="button" role="radio" aria-checked="true"
+          title="2t トラック (全幅 1.7m / 全長 約5.6m)">
+          <svg class="veh-icon" width="22" height="13" viewBox="0 0 24 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 2px;">
+            <rect x="2" y="5" width="13" height="7" rx="1"/>
+            <path d="M15 5h4l3 3v4h-7V5z"/>
+            <circle cx="6" cy="12" r="2" fill="currentColor"/>
+            <circle cx="17" cy="12" r="2" fill="currentColor"/>
+          </svg>
+          <span class="vc-name">2t</span>
+          <span class="vc-spec">W1.7m</span>
+        </button>
+        <button class="veh-card" data-veh="3t" type="button" role="radio" aria-checked="false"
+          title="3t トラック (全幅 2.2m / 全長 約7.4m)">
+          <svg class="veh-icon" width="22" height="13" viewBox="0 0 24 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 2px;">
+            <rect x="1" y="4" width="14" height="8" rx="1"/>
+            <path d="M15 4h4l4 4v4h-8V4z"/>
+            <circle cx="5" cy="12" r="2" fill="currentColor"/>
+            <circle cx="18" cy="12" r="2" fill="currentColor"/>
+          </svg>
+          <span class="vc-name">3t</span>
+          <span class="vc-spec">W2.2m</span>
+        </button>
+        <button class="veh-card" data-veh="4t" type="button" role="radio" aria-checked="false"
+          title="4t トラック (全幅 2.3m / 全長 約9.6m)">
+          <svg class="veh-icon" width="24" height="14" viewBox="0 0 26 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 2px;">
+            <rect x="1" y="3" width="16" height="9" rx="1"/>
+            <path d="M17 3h5l3 4v5h-8V3z"/>
+            <circle cx="5" cy="12" r="2.5" fill="currentColor"/>
+            <circle cx="20" cy="12" r="2.5" fill="currentColor"/>
+          </svg>
+          <span class="vc-name">4t</span>
+          <span class="vc-spec">W2.3m</span>
+        </button>
+        <button class="veh-card" data-veh="10t" type="button" role="radio" aria-checked="false"
+          title="10t トラック (全幅 2.5m / 全長 約14.4m)">
+          <svg class="veh-icon" width="26" height="14" viewBox="0 0 28 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 2px;">
+            <rect x="1" y="2" width="18" height="10" rx="1"/>
+            <path d="M19 2h5l3 4v6h-8V2z"/>
+            <circle cx="5" cy="12" r="2.5" fill="currentColor"/>
+            <circle cx="20" cy="12" r="2.5" fill="currentColor"/>
+            <circle cx="24" cy="12" r="2.5" fill="currentColor"/>
+          </svg>
+          <span class="vc-name">10t</span>
+          <span class="vc-spec">W2.5m</span>
+        </button>
+        <button class="veh-card" data-veh="custom" type="button" role="radio" aria-checked="false"
+          title="設定パネルで車格を細かく指定">
+          <svg class="veh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 2.5px;">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          <span class="vc-name">自由</span>
+          <span class="vc-spec">カスタム</span>
+        </button>
+      </div>
+      <!-- Hidden select for backward compat with controls.js -->
+      <select class="ctrl-input modern-select" id="vehiclePreset" style="display:none;">
+        <option value="2t" selected>2t トラック</option>
+        <option value="3t">3t トラック</option>
+        <option value="4t">4t トラック</option>
+        <option value="10t">10t トラック</option>
+        <option value="custom">カスタム車</option>
+      </select>
+    </div>
+
+    <!-- Driver Skill Widget -->
+    <div class="top-skill">
+      <span class="top-skill-label">運転技術</span>
+      <input class="ctrl-range top-skill-range" type="range" id="driverSkill" min="0.5" max="2.0" step="0.1"
+        value="1.0" />
+      <span id="driverSkillValue" class="top-skill-val">1.0</span>
+    </div>
+
+    <div class="top-primary-actions">
+      <button class="ctrl-btn ghost top-road-btn" id="topRefreshData" type="button"
+        title="現在表示中の地図範囲からOSM道路データを取得します"
+        aria-label="道路データを取得">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+          style="margin-right:6px;" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+          <polyline points="21 3 21 9 15 9" />
+        </svg>
+        <span>道路取得</span>
+      </button>
+      <button class="assess-action-btn" id="runDeliveryAssessment"
+        title="現在の経路と車両で搬入判定を実行します（数秒〜数十秒）"
+        aria-label="搬入判定を実行">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+          style="margin-right:6px;" aria-hidden="true">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+          <polyline points="22 4 12 14.01 9 11.01"></polyline>
+        </svg>
+        <span>搬入判定を実行</span>
+      </button>
+    </div>
+
+    <div class="top-actions">
+      <!-- AF(自動走行)/DR(操作) は上級設定タブへ移動 -->
+      <button class="ctrl-btn ghost" id="open3DTop" title="3D都市ビューで搬入確認（建物・経路を立体表示）"
+        style="gap:5px;font-weight:700;font-size:12px;">
+        🏙️ 3D確認
+      </button>
+      <button class="ctrl-btn ghost icon" id="toggleSettingsPanel" title="設定">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path
+            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      </button>
+      <button class="ctrl-btn ghost icon" id="toggleTheme" title="テーマ">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg>
+      </button>
+      <button class="ctrl-btn danger-ghost icon" id="full-reset" title="リセット">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== DRIVE MODE HUD ===== -->
+  <div id="driveHud" hidden>
+    <button class="dhud-hide-btn" id="driveHudHideBtn" type="button" title="収納">×</button>
+    <!-- Off-road alert strip -->
+    <div class="dhud-alert" id="driveOffRoadAlert" hidden>⚠ 路外逸脱</div>
+
+    <!-- Speed + gear row -->
+    <div class="dhud-top">
+      <div class="dhud-spd">
+        <span class="dhud-spd-num" id="driveSpeedVal">0</span>
+        <span class="dhud-spd-unit">km/h</span>
+      </div>
+      <div class="dhud-divider"></div>
+      <div class="dhud-right">
+        <div class="dhud-gear-box" id="driveGearVal">N</div>
+        <div class="dhud-hdg-box" id="driveHeadingVal">0°</div>
+      </div>
+    </div>
+
+    <div class="dhud-hint">ESC 終了</div>
+  </div>
+  <button id="driveHudShowBtn" class="panel-peek-btn panel-peek-drive" type="button" hidden>HUD</button>
+
+  <!-- ===== RESULT CHIP (appears bottom-left after assessment) ===== -->
+  <div id="resultChip" class="result-chip" style="display:none;">
+    <div class="chip-score">
+      <svg class="chip-ring" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="16" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="3" />
+        <circle id="chipRingFg" cx="18" cy="18" r="16" fill="none" stroke="var(--accent)" stroke-width="3"
+          stroke-dasharray="100.53" stroke-dashoffset="100.53" stroke-linecap="round" transform="rotate(-90 18 18)" />
+      </svg>
+      <span id="chipScoreNum">-</span>
+    </div>
+    <div class="chip-info">
+      <div class="chip-status">
+        <span id="chipStatusText">-</span>
+        <span id="chipStatusBadge" class="chip-badge">-</span>
+      </div>
+      <div class="chip-detail" id="chipDetail">-</div>
+    </div>
+    <button class="chip-expand" id="chipExpandBtn" title="詳細">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <polyline points="6 9 12 15 18 9" />
+      </svg>
+    </button>
+  </div>
+
+  <!-- ===== VEHICLE SWEEP TABS (appears above result chip after assessment) ===== -->
+  <div id="vehicleSweepTabs" class="vehicle-sweep-tabs" style="display:none;">
+    <span class="vst-label">軌跡</span>
+    <button class="vst-btn" data-preset="2t_flat">2t</button>
+    <button class="vst-btn" data-preset="3t_flat">3t</button>
+    <button class="vst-btn" data-preset="4t_flat">4t</button>
+    <button class="vst-btn" data-preset="10t_unic">10t</button>
+    <button class="vst-btn" data-preset="trailer_15t">15t</button>
+  </div>
+
+  <!-- ===== MAP GUIDE (center bottom pill) ===== -->
+  <div id="mapGuide">
+    <span id="mapGuideText">🚛 上の車両カードで車種を選択 → 地図をクリックして経路の端点を追加</span>
+  </div>
+
+  <!-- ===== EXPANDED RESULT PANEL (slides up from chip) ===== -->
+  <div id="resultPanel" class="result-panel" style="display:none;" role="region" aria-labelledby="deliveryStatusBadge"
+    aria-describedby="deliverySummary">
+    <div class="rp-header">
+      <span id="deliveryStatusBadge" class="rp-badge">N/A</span>
+      <button class="rp-close" id="resultPanelClose" type="button" aria-label="結果パネルを閉じる" title="閉じる (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+    </div>
+    <div class="rp-body">
+      <div class="rp-score-row">
+        <div class="rp-ring" id="deliveryScoreRing" aria-label="判定スコア">
+          <span id="deliveryScoreValue">-</span>
+        </div>
+        <div class="rp-summary">
+          <div id="deliverySummary">判定待ち</div>
+          <div id="deliveryDetails"></div>
+        </div>
+      </div>
+      <div id="fleetAssessmentBoard" class="fleet-assessment-board" style="margin-top: 15px; margin-bottom: 15px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px;">
+        <div style="font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px;">車両フリート一括スキャン</div>
+        <div class="fleet-matrix" id="fleetMatrixContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px;">
+          <div style="grid-column: 1 / -1; font-size: 11px; color: #64748b; font-style: italic; text-align: center; padding: 10px 0;">判定を実行すると、全車両の合否一覧が表示されます</div>
+        </div>
+      </div>
+      <div class="rp-actions">
+        <button class="ctrl-btn ghost small" id="printDeliveryReport" disabled
+          title="搬入確認レポートを別ウィンドウで開きます" aria-label="レポート出力">📄 レポート出力</button>
+        <button class="ctrl-btn ghost small" id="saveDeliveryResult" disabled
+          title="判定結果のJSONをダウンロードします" aria-label="結果をJSONで保存">結果保存(JSON)</button>
+      </div>
+    </div>
+    <!-- UI-F: スクリーンリーダー読み上げ用のライブ領域 -->
+    <div id="deliveryLiveRegion" class="rp-live" role="status" aria-live="polite" aria-atomic="true"></div>
+  </div>
+
+  <!-- ===== DELIVERY PROGRESS BAR (Center Bottom) ===== -->
+  <div id="deliveryProgress" class="thud-progress-bar">
+    <div class="thud-progress-text" id="progressText">Checking Feasibility...</div>
+    <div class="thud-progress-track">
+      <div class="thud-progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <!-- ===== STATUS (bottom-left, one-liner) ===== -->
+  <div id="statusLine">
+    <span id="status-message">住所を検索 → 地図クリックで端点追加 → 自動判定</span>
+  </div>
+
+  <!-- ===== SETTINGS PANEL (right slide) ===== -->
+  <aside id="sidePanel" aria-hidden="true" role="complementary" aria-label="設定パネル">
+    <header class="sp-header">
+      <span>設定</span>
+      <button class="ctrl-btn ghost icon small" id="closeSettingsPanel" type="button"
+        title="閉じる" aria-label="設定パネルを閉じる">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+          <path d="M18 6 6 18" />
+          <path d="m6 6 12 12" />
+        </svg>
+      </button>
+    </header>
+
+    <!-- UI-D: 設定パネル タブナビゲーション -->
+    <nav class="sp-tabs" role="tablist" aria-label="設定カテゴリ">
+      <button class="sp-tab" id="spTabBasic" role="tab" aria-selected="true"
+        aria-controls="spPanelBasic" type="button" data-sp-tab="basic">基本</button>
+      <button class="sp-tab" id="spTabDetailed" role="tab" aria-selected="false"
+        aria-controls="spPanelDetailed" type="button" tabindex="-1" data-sp-tab="detailed">詳細</button>
+      <button class="sp-tab" id="spTabAdvanced" role="tab" aria-selected="false"
+        aria-controls="spPanelAdvanced" type="button" tabindex="-1" data-sp-tab="advanced">上級</button>
+    </nav>
+
+    <div class="sp-body">
+
+      <div class="sp-tabpanel" id="spPanelBasic" role="tabpanel" aria-labelledby="spTabBasic" data-sp-panel="basic">
+      <details class="sp-section" open>
+        <summary>🛣️ 道路データ</summary>
+        <div class="sp-inner">
+          <label class="sp-field">
+            <span>データソース</span>
+            <select class="ctrl-input" id="roadDataSource">
+              <option value="osm">OpenStreetMap</option>
+              <option value="gsi">地理院地図 Vector</option>
+              <option value="hybrid" selected>GSI + OSM (推奨)</option>
+            </select>
+          </label>
+          <button class="ctrl-btn ghost wide" id="refresh-data">🔄 道路データ取得</button>
+          <div id="advancedMeta" class="sp-meta">端点: 0点 / 経路: 未確定</div>
+          <label class="sp-field" style="margin-top:8px;">
+            <span style="font-size:10px;opacity:0.7;">🏢 PLATEAU建物URL（任意・高精度3D建物。空ならOSM建物のみ）</span>
+            <input class="ctrl-input" type="text" id="plateauUrlInput"
+              placeholder="https://.../buildings.geojson" />
+          </label>
+          <div class="sp-meta" id="buildingStatus" style="margin-top:4px;">建物: 道路取得時に自動取得（OSM＋PLATEAUハイブリッド）</div>
+        </div>
+      </details>
+
+
+      <details class="sp-section" id="routeSetupSection" open>
+        <summary>🗺️ 経路設定</summary>
+        <div class="sp-inner">
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost toggle active" id="toggleManualEndpointMode">📌 端点追加</button>
+            <button class="ctrl-btn ghost toggle active" id="toggleRoadGraphMode">🔗 道路ネット</button>
+          </div>
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost" id="osrm-route">🧭 OSRM経路</button>
+            <button class="ctrl-btn ghost" id="reset-route" disabled>↩ リセット</button>
+          </div>
+          <ul id="selected-roads-list"></ul>
+          <div id="routeCandidatesPanel" class="route-candidates"></div>
+          <label class="sp-field" style="background:rgba(255,255,255,0.05); padding:6px; border-radius:4px;">
+            <input type="checkbox" id="autoSatYoloBeforeRoute">
+            <span style="font-weight:700; color:#0ea5e9;">経路生成前に衛星YOLOで幅員確認（遅い）</span>
+          </label>
+          <button class="ctrl-btn ghost small wide" id="clear-endpoints" disabled>🗑 端点クリア</button>
+        </div>
+      </details>
+      </div><!-- /#spPanelBasic -->
+
+      <div class="sp-tabpanel" id="spPanelDetailed" role="tabpanel" aria-labelledby="spTabDetailed"
+        data-sp-panel="detailed" hidden>
+      <details class="sp-section" open>
+        <summary>✅ 判定オプション</summary>
+        <div class="sp-inner">
+          <button class="ctrl-btn ghost" id="drawSweep">🔄 軌跡描画</button>
+          <button class="ctrl-btn ghost" id="clearSweep">🧹 軌跡クリア</button>
+          <div class="sp-grid2">
+            <label class="sp-field" style="background:rgba(255,255,255,0.05); padding:6px; border-radius:4px;">
+              <input type="checkbox" id="strictWidthMode" checked> <span style="font-weight:700;">幅厳格モード</span>
+            </label>
+            <label class="sp-field" style="background:rgba(255,255,255,0.05); padding:6px; border-radius:4px;">
+              <input type="checkbox" id="autoSvWidthOnDelivery" checked> <span
+                style="font-weight:700; color:#0ea5e9;">SV/YOLO幅</span>
+            </label>
+          </div>
+          <div class="sp-grid2">
+            <label class="sp-field" style="background:rgba(255,255,255,0.05); padding:6px; border-radius:4px;">
+              <input type="checkbox" id="autoSatYoloOnDelivery" checked> <span
+                style="font-weight:700; color:#0ea5e9;">衛星YOLO</span>
+            </label>
+            <label class="sp-field">
+              <span>+幅余裕(m)</span>
+              <input class="ctrl-range" type="range" id="strictWidthExtra" min="0" max="1.2" step="0.05" value="0.5"
+                style="width:60px;">
+              <span id="strictWidthExtraVal" style="font-size:11px;">0.50m</span>
+            </label>
+          </div>
+          <!-- hidden stubs for backward compat -->
+          <button id="svRunQuick" style="display:none;"></button>
+          <div id="svQuickStatus" style="display:none;"></div>
+          <button id="runFeasibility" style="display:none;"></button>
+          <button id="clearFeasibility" style="display:none;"></button>
+          <div id="feasibilitySection" style="display:none;">
+            <div id="feasibilityReport"></div><button id="saveFeasibility" style="display:none;"></button>
+          </div>
+        </div>
+      </details>
+
+      <details class="sp-section" id="streetViewSection">
+        <summary>📷 Street View AI解析</summary>
+        <div class="sp-inner">
+          <!-- YOLOサーバー状態 -->
+          <label class="sp-field" style="margin-bottom:4px;">
+            <span>YOLO サーバー URL <span style="font-size:10px;opacity:0.6;">(別PCのIPも可)</span></span>
+            <input class="ctrl-input" type="text" id="yoloApiBase" value=""
+              placeholder="自動 (このページのホスト:8001)" />
+          </label>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+            <span id="yoloServerDot"
+              style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#888;flex-shrink:0;"
+              title="YOLOサーバー状態"></span>
+            <span id="yoloServerLabel" style="font-size:0.78rem;color:var(--text-muted,#aaa);">サーバー確認中…</span>
+            <button class="ctrl-btn ghost" id="yoloServerCheck"
+              style="margin-left:auto;padding:2px 8px;font-size:0.75rem;">再確認</button>
+            <button class="ctrl-btn ghost" id="yoloServerStart" style="padding:2px 8px;font-size:0.75rem;"
+              title="起動コマンドを表示">起動</button>
+          </div>
+          <button class="ctrl-btn accent wide" id="svScanAndAnalyze">📷 SV + YOLO 一括解析</button>
+          <div class="sp-meta" id="svStatus">Street View: idle</div>
+          <div class="sp-grid2">
+            <label class="sp-field"><span>間隔(m)</span><input class="ctrl-input" type="number" id="svSpacing" min="5"
+                max="50" step="1" value="15" /></label>
+            <label class="sp-field"><span>枚数上限</span><input class="ctrl-input" type="number" id="svMaxFrames" min="6"
+                max="80" step="2" value="24" /></label>
+          </div>
+          <details class="sp-sub-details">
+            <summary>個別操作</summary>
+            <div class="sp-grid2">
+              <button class="ctrl-btn ghost" id="svScan">📸 SCAN</button>
+              <button class="ctrl-btn ghost" id="svAnalyze">🤖 YOLO</button>
+            </div>
+            <div class="sp-grid2">
+              <button class="ctrl-btn ghost" id="svSegment">🧩 SEG</button>
+              <button class="ctrl-btn ghost" id="svApplySeg">✅ SEG適用</button>
+            </div>
+            <div class="sp-grid2">
+              <button class="ctrl-btn ghost" id="svApply">📌 検出適用</button>
+              <button class="ctrl-btn ghost" id="svApplyWidth">📏 幅適用</button>
+            </div>
+            <div class="sp-grid3">
+              <button class="ctrl-btn ghost" id="svDrive">▶ DRIVE</button>
+              <button class="ctrl-btn ghost" id="svStop">⏹ STOP</button>
+              <button class="ctrl-btn danger-ghost" id="svClear">🗑 CLEAR</button>
+            </div>
+          </details>
+          <div id="svFrameList" class="sv-grid"></div>
+        </div>
+      </details>
+      </div><!-- /#spPanelDetailed -->
+
+      <div class="sp-tabpanel" id="spPanelAdvanced" role="tabpanel" aria-labelledby="spTabAdvanced"
+        data-sp-panel="advanced" hidden>
+      <details class="sp-section" open>
+        <summary>🚚 走行モード</summary>
+        <div class="sp-inner">
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost" id="autoFollowBtn" title="ルートに沿って自動走行"
+              style="gap:5px;font-weight:700;font-size:12px;">
+              ▶ 自動走行
+            </button>
+          </div>
+        </div>
+      </details>
+      <details class="sp-section" open>
+        <summary>📏 道路幅エディタ</summary>
+        <div class="sp-inner">
+          <button class="ctrl-btn ghost toggle wide" id="toggleWidthEditMode">✏️ 道路幅編集</button>
+          <div id="widthOverridesStatus" class="sp-meta">上書き: 0件</div>
+          <div class="sp-stats">
+            <div>ID: <span id="selectedRoadId">-</span></div>
+            <div>OSM: <span id="selectedRoadWidthOsm">-</span> m</div>
+            <div>AI: <span id="selectedRoadWidthAi">-</span> m</div>
+          </div>
+          <input class="ctrl-input" type="number" id="roadWidthInput" step="0.1" placeholder="幅(m)" />
+          <div class="sp-grid2">
+            <button class="ctrl-btn accent" id="applyRoadWidth" disabled>✅ 適用</button>
+            <button class="ctrl-btn ghost" id="resetRoadWidth" disabled>↩ リセット</button>
+          </div>
+          <div class="sp-grid3">
+            <button class="ctrl-btn ghost small" id="exportWidthOverrides">📤 EXP</button>
+            <button class="ctrl-btn ghost small" id="importWidthOverridesBtn">📥 IMP</button>
+            <button class="ctrl-btn danger-ghost small" id="clearWidthOverrides">🗑 CLR</button>
+            <input type="file" id="importWidthOverridesFile" accept=".json,application/json" hidden />
+          </div>
+          <button class="ctrl-btn ghost small wide" id="validateWidthFusion">Validate width fusion</button>
+        </div>
+      </details>
+
+      <details class="sp-section">
+        <summary>PLATEAU / 3D city data</summary>
+        <div class="sp-inner">
+          <input class="ctrl-input" type="url" id="plateauBuildingsUrl" placeholder="PLATEAU GeoJSON URL" />
+          <button class="ctrl-btn ghost wide" id="loadPlateauBuildings">Load PLATEAU buildings</button>
+          <div class="sp-grid2">
+            <button class="ctrl-btn accent" id="open3D" type="button">3D都市表示</button>
+            <button class="ctrl-btn ghost" id="toggleBuildingsWireframe" type="button">建物表示</button>
+          </div>
+          <label class="sp-field">
+            <span>3D 建物取得URL</span>
+            <input class="ctrl-input" type="url" id="gbaUrl" placeholder="GeoJSON / WFS URL" />
+          </label>
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost" id="autoGbaWfs" type="button">自動URL</button>
+            <button class="ctrl-btn ghost" id="loadGbaUrl" type="button">3D読込</button>
+          </div>
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost" id="loadGbaFileBtn" type="button">GeoJSONファイル</button>
+            <button class="ctrl-btn danger-ghost" id="clearGbaBuildings" type="button">3Dクリア</button>
+          </div>
+          <input type="file" id="gbaFile" accept=".json,.geojson,application/geo+json,application/json" hidden />
+          <label class="sp-field">
+            <span>3D表示範囲(m)</span>
+            <input class="ctrl-input" type="number" id="corridorMeters" min="20" max="1000" step="10" value="150" />
+          </label>
+          <button class="ctrl-btn ghost small wide" id="toggleGbaAutoLoad" type="button">経路変更時に3D建物を自動更新</button>
+          <div class="sp-meta" id="plateauStatus">PLATEAU: not loaded</div>
+          <div class="sp-meta" id="gbaStatus">3D buildings: not loaded</div>
+        </div>
+      </details>
+
+      <details class="sp-section">
+        <summary>⚠️ 障害物</summary>
+        <div class="sp-inner">
+          <div class="sp-grid2">
+            <button class="ctrl-btn ghost toggle" id="toggleObstacleMode">障害物追加</button>
+            <button class="ctrl-btn ghost toggle" id="toggleObstaclePolygonMode">Polygon</button>
+            <button class="ctrl-btn ghost" id="clearObstacles">全削除</button>
+          </div>
+          <label class="sp-field">
+            <span>半径 (m)</span>
+            <div class="sp-range-row">
+              <input class="ctrl-range" type="range" id="obstacleRadius" min="0.5" max="12" step="0.1" value="1.5" />
+              <span class="sp-range-val" id="obstacleRadiusValue">1.5m</span>
+            </div>
+          </label>
+          <label class="sp-field">
+            <span>高さ (m)</span>
+            <div class="sp-range-row">
+              <input class="ctrl-range" type="range" id="obstacleHeight" min="0.5" max="30" step="0.5" value="3" />
+              <span class="sp-range-val" id="obstacleHeightValue">3.0m</span>
+            </div>
+          </label>
+          <div class="sp-meta" id="obstacleStatus">障害物: 0</div>
+        </div>
+      </details>
+
+      <details class="sp-section">
+        <summary>🚛 操作モード設定</summary>
+        <div class="sp-inner">
+          <div class="sp-grid3">
+            <label class="sp-field">
+              <span>車幅 (m)</span>
+              <input type="number" id="driveTruckW" value="2.5" min="0.5" max="5" step="0.1" style="width:100%;">
+            </label>
+            <label class="sp-field">
+              <span>ホイールベース (m)</span>
+              <input type="number" id="driveWheelbase" value="4.0" min="1" max="20" step="0.5" style="width:100%;">
+            </label>
+            <label class="sp-field">
+              <span>最高速 (km/h)</span>
+              <input type="number" id="driveMaxSpeed" value="50" min="5" max="120" step="5" style="width:100%;">
+            </label>
+          </div>
+          <button class="ctrl-btn ghost small wide" id="driveTrailClear">🗑 軌跡クリア</button>
+        </div>
+      </details>
+
+      <details class="sp-section">
+        <summary>🪵 木材積載（荷台）</summary>
+        <div class="sp-inner">
+          <label class="sp-field cargo-enable">
+            <input type="checkbox" id="cargoEnabled"> <span style="font-weight:700;">荷台に木材を積載する</span>
+          </label>
+          <div class="sp-grid3">
+            <label class="sp-field">
+              <span>長さ (m)</span>
+              <input type="number" id="cargoLength" value="4.0" min="0.5" max="14" step="0.5" style="width:100%;">
+            </label>
+            <label class="sp-field">
+              <span>幅 (m)</span>
+              <input type="number" id="cargoWidth" value="1.0" min="0.1" max="3" step="0.1" style="width:100%;">
+            </label>
+            <label class="sp-field">
+              <span>本数</span>
+              <input type="number" id="cargoCount" value="1" min="1" max="30" step="1" style="width:100%;">
+            </label>
+          </div>
+          <div class="cargo-placement" role="group" aria-label="木材の荷台配置">
+            <button type="button" class="cargo-place-btn" data-place="left" title="左寄せ">◧ 左寄り</button>
+            <button type="button" class="cargo-place-btn active" data-place="center" title="中央">▣ 中央</button>
+            <button type="button" class="cargo-place-btn" data-place="right" title="右寄せ">◨ 右寄り</button>
+          </div>
+          <div class="sp-meta" id="cargoStatus" style="margin-top:6px;">未積載 — 自動走行/操作モードで荷台上に外形を描画します</div>
+        </div>
+      </details>
+      </div><!-- /#spPanelAdvanced -->
+
+    </div>
+  </aside>
+
+  <!-- ===== STREET VIEW ===== -->
+  <div id="map3dWrap" aria-hidden="true">
+    <div id="map3d"></div>
+    <aside id="map3dPanel">
+      <header class="sp-header">
+        <span>3D CITY SIMULATION</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <button class="ctrl-btn ghost small" id="play3D" type="button">PLAY</button>
+          <button class="ctrl-btn ghost small" id="pause3D" type="button">PAUSE</button>
+          <button class="ctrl-btn danger-ghost small" id="close3D" type="button">CLOSE</button>
+        </div>
+      </header>
+      <div class="sp-body">
+        <div class="sp-inner">
+          <label class="sp-field">
+            <span>Google 3D Tiles API Key</span>
+            <input class="ctrl-input" type="text" id="tilesApiKey" placeholder="未入力なら設定APIキーを使用" autocomplete="off" />
+          </label>
+          <button class="ctrl-btn ghost" id="tilesApply" type="button">APPLY</button>
+          <div id="tilesStatus" class="sp-meta">3D ground: waiting</div>
+          <div class="sp-meta">Poses: <span id="map3dPoseCount">0</span> / Contacts: <span id="map3dCollisionCount">0</span></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="svViewport">
+    <div id="svPano"></div>
+    <div id="svTruckOverlay"></div>
+    <button id="svExpandBtn" class="sv-expand-btn" title="拡大/縮小">⛶</button>
+    <button id="svHideBtn" class="sv-hide-btn" type="button" title="収納">×</button>
+  </div>
+  <button id="svShowBtn" class="panel-peek-btn panel-peek-sv" type="button" hidden>Street View</button>
+
+  <!-- ===== TOAST ===== -->
+  <div id="toast"></div>
+
+  <!-- hidden stubs for controls.js backward compat -->
+  <input type="range" id="playbackSpeed" min="0.2" max="2.0" step="0.05" value="0.6" style="display:none;" />
+  <span id="playbackSpeedValue" style="display:none;">x0.60</span>
+
+  <!-- ユーザー設定 (APIキー等) -->
+  <script src="runtime-config.js"></script>
+
+  <!-- Libs -->
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/polygon-clipping@0.15.3/dist/polygon-clipping.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
+  <script src="https://unpkg.com/cesium@1.120.0/Build/Cesium/Cesium.js"></script>
+  <!-- 軽量3D（Three.js）— Cesium の代替。原点固定の自前座標で経路ずれを防ぐ -->
+  <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    // runtime-config.js のAPIキーを使って Google Maps を動的に読み込む
+    (function () {
+      var cfg = window.LOGISTICS_RUNTIME_CONFIG || window.USER_CONFIG || {};
+      var key = cfg.googleMapsApiKey || '';
+      if (!key) return;
+      var s = document.createElement('script');
+      s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&v=weekly&loading=async';
+      s.async = true; s.defer = true;
+      document.head.appendChild(s);
+    })();
+  </script>
+  <script type="module" src="./src/main.js"></script>
+  <script type="application/x-disabled" data-legacy-module="src/main.js">
+    import { initStreetViewScan } from './src/ui/streetviewScan.js';
+    document.addEventListener('DOMContentLoaded', () => {
+      initStreetViewScan();
+    });
+  </script>
+
+  <!-- Legacy inline block; active logic moved to src/ui/truckHud.js -->
+  <script type="application/x-disabled" data-legacy-module="src/ui/truckHud.js">
+    (function () {
+      const vehicles = {
+        '2t_flat': { len: 4690, bed: 3100, unic: false, width: 1695, height: 1890 },
+        '2t_unic': { len: 4690, bed: 2600, unic: true, width: 1695, height: 1890 },
+        '3t_flat': { len: 6080, bed: 4360, unic: false, width: 2180, height: 2350 },
+        '3t_unic': { len: 6140, bed: 4500, unic: true, width: 2180, height: 2350 },
+        '4t_flat': { len: 8175, bed: 6165, unic: false, width: 2315, height: 2495 },
+        '4t_unic': { len: 8175, bed: 5500, unic: true, width: 2315, height: 2495 },
+        '10t_unic': { len: 11990, bed: 8585, unic: true, width: 2490, height: 3785 },
+        'trailer_15t': { len: 11990, bed: 8700, unic: true, width: 2490, height: 3785, trailer: true }
+      };
+
+      const $ = id => document.getElementById(id);
+      const hudState = { vehKey: '4t_flat', mode: 'none', lumberLen: 6000, count: 1 };
+      const svgRefs = {};
+      const NS = 'http://www.w3.org/2000/svg';
+
+      // Toggle collapse
+      $('truckHudToggle')?.addEventListener('click', () => {
+        $('truckHud')?.classList.toggle('collapsed');
+      });
+
+      // Controls
+      $('hudVehicleSelect')?.addEventListener('change', e => { hudState.vehKey = e.target.value; renderHud(); });
+      document.querySelectorAll('input[name="cargoMode"]').forEach(r =>
+        r.addEventListener('change', e => { hudState.mode = e.target.value; renderHud(); })
+      );
+      document.querySelectorAll('input[name="cargoCount"]').forEach(r =>
+        r.addEventListener('change', e => { hudState.count = parseInt(e.target.value); renderHud(); })
+      );
+      $('hudLumberLen')?.addEventListener('input', e => {
+        hudState.lumberLen = parseFloat(e.target.value) * 1000;
+        if ($('hudLumberLenVal')) $('hudLumberLenVal').textContent = e.target.value;
+        renderHud();
+      });
+
+      // ═══════════════════════════════════════════════════════════
+      //  createVehicleSvg  ─ リアルなトラック側面図SVGを生成
+      // ═══════════════════════════════════════════════════════════
+      function createVehicleSvg(key, v) {
+        const S = 0.08;                // mm → px スケール
+        const realCabW = 1680 * S;     // キャブ幅を実車に近く
+        const totalW = v.len * S;
+        const bedW = v.bed * S;
+        const viewW = Math.max(1100, totalW + 240);
+
+        // ── Y座標基準 (比率見直し) ────────────────────────────────
+        const GY = 220;
+        const WR = 22;           // タイヤを少し小さくして腰高感を抑える
+        const AY = GY - WR;
+        const FBY = AY - WR + 12;
+        const BFY = FBY - 10;
+        const AORH = 26;           // あおり板の高さを強調
+        const BTY = BFY - AORH;
+        const CRY = BFY - 95;     // キャブの高さを10%ダウン
+        const TRX = BFY - 115;    // 鳥居の高さも調整
+
+        // ── X座標 ───────────────────────────────────────────────
+        const CX0 = 10;           // フロントオーバーハング
+        const CX1 = CX0 + realCabW;
+        const BX1 = totalW;
+        const BX0 = BX1 - bedW;   // 後ろから荷台を配置
+        const FWX = CX0 + 35;
+        const RWX = BX1 - 55;
+
+        const pid = key.replace(/[^a-zA-Z0-9_]/g, '_');
+        const woodId = 'w_' + pid;
+        const arrowId = 'a_' + pid;
+        const arrowGId = 'ag_' + pid;
+        const cargoGroupId = 'hudCargoGroup_' + pid;
+
+        // ── キャブ形状 (スリム化・角度調整) ───────────────────────
+        // フロントガラス上端X (角度を緩める: 前端から少しだけ下げる)
+        const fsTop = CX0 + realCabW * 0.15;
+        const cabPath = [
+          `M${CX0},${BFY}`,
+          `L${CX0},${BFY - 15}`,
+          `L${CX0 - 4},${BFY - 15}`, `L${CX0 - 4},${BFY - 38}`, `L${CX0},${BFY - 38}`,
+          `L${CX0 + 2},${BFY - 55}`, // 少し段差をつけてリアルに
+          `L${fsTop},${CRY}`,
+          `L${CX1},${CRY}`,
+          `L${CX1},${BFY}`,
+          `Z`
+        ].join(' ');
+
+        const winPath = [
+          `M${CX0 + 10},${BFY - 58}`,
+          `L${fsTop + 6},${CRY + 8}`,
+          `L${CX1 - 8},${CRY + 8}`,
+          `L${CX1 - 8},${BFY - 58}`,
+          `Z`
+        ].join(' ');
+
+        // ── タイヤ描画 (スポーク + デュアルリアル) ────────────────
+        function tire(cx, dual) {
+          const R = WR, Rim = WR * 0.56, Hub = WR * 0.22, boltR = WR * 0.38;
+          // デュアルタイヤの外側リング (4t以上)
+          let s = dual
+            ? `<circle cx="${cx + 5}" cy="${AY}" r="${R - 1}" fill="#0d1117" stroke="#1e293b" stroke-width="1.5" opacity="0.85"/>`
+            : '';
+          // アウタータイヤ
+          s += `<circle cx="${cx}" cy="${AY}" r="${R}" fill="#111827" stroke="#374151" stroke-width="2"/>`;
+          // タイヤサイドウォール (縦溝のヒント)
+          s += `<circle cx="${cx}" cy="${AY}" r="${R - 3}" fill="none" stroke="#1e293b" stroke-width="2.5"/>`;
+          // リム
+          s += `<circle cx="${cx}" cy="${AY}" r="${Rim}" fill="#1e2d3d" stroke="#334155" stroke-width="1.5"/>`;
+          // スポーク (6本)
+          for (let i = 0; i < 6; i++) {
+            const a = i * 60 * Math.PI / 180;
+            const x0 = (cx + Hub * Math.cos(a)).toFixed(1);
+            const y0 = (AY + Hub * Math.sin(a)).toFixed(1);
+            const x1 = (cx + boltR * Math.cos(a)).toFixed(1);
+            const y1 = (AY + boltR * Math.sin(a)).toFixed(1);
+            s += `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="#475569" stroke-width="2" stroke-linecap="round"/>`;
+          }
+          // ハブキャップ
+          s += `<circle cx="${cx}" cy="${AY}" r="${Hub}" fill="#0f172a" stroke="#64748b" stroke-width="1"/>`;
+          // ボルト穴 (6個)
+          for (let i = 0; i < 6; i++) {
+            const a = (i * 60 + 30) * Math.PI / 180;
+            const bx = (cx + boltR * Math.cos(a)).toFixed(1);
+            const by = (AY + boltR * Math.sin(a)).toFixed(1);
+            s += `<circle cx="${bx}" cy="${by}" r="1.5" fill="#0f172a" stroke="#475569" stroke-width="0.8"/>`;
+          }
+          return s;
+        }
+
+        // ── クレーン描画 (ユニック: 後方斜め上げ姿勢) ──────────
+        let unic = '';
+        if (v.unic) {
+          const ux = BX0 + bedW * 0.12;   // 荷台前寄り
+          const baseY = BFY - 6;
+          // ブーム角度: 後方に向けて35°上げ (休止姿勢)
+          const boomRad = -30 * Math.PI / 180;  // SVGのY軸反転なので負 = 上向き
+          const outerLen = Math.min(bedW * 0.55, 110);
+          const innerLen = outerLen * 0.65;
+          const tipX = (ux + Math.cos(boomRad) * outerLen).toFixed(1);
+          const tipY = (baseY + Math.sin(boomRad) * outerLen).toFixed(1);
+          const midX = (ux + Math.cos(boomRad) * innerLen).toFixed(1);
+          const midY = (baseY + Math.sin(boomRad) * innerLen).toFixed(1);
+          const cylTX = (ux + Math.cos(boomRad) * outerLen * 0.38).toFixed(1);
+          const cylTY = (baseY + Math.sin(boomRad) * outerLen * 0.38).toFixed(1);
+          // フック: ブーム先端から垂直に下げる
+          const hkX = tipX;
+          const hkY1 = tipY;
+          const hkY2 = (parseFloat(tipY) + 28).toFixed(1);
+          unic = `
+            <g class="unic-crane">
+              <!-- アウトリガー脚 -->
+              <rect x="${ux - 22}" y="${BFY - 2}" width="7" height="${GY - BFY + 2}" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+              <!-- 旋回台 (ターンテーブル) -->
+              <rect x="${ux - 18}" y="${baseY - 12}" width="36" height="12" rx="3" fill="#b91c1c" stroke="#7f1d1d" stroke-width="1"/>
+              <rect x="${ux - 12}" y="${baseY - 18}" width="24" height="8" rx="2" fill="#dc2626" stroke="#991b1b" stroke-width="1"/>
+              <!-- アウターブーム -->
+              <line x1="${ux}" y1="${baseY - 12}" x2="${tipX}" y2="${tipY}" stroke="#b91c1c" stroke-width="9" stroke-linecap="round"/>
+              <line x1="${ux}" y1="${baseY - 12}" x2="${tipX}" y2="${tipY}" stroke="#dc2626" stroke-width="7" stroke-linecap="round" opacity="0.6"/>
+              <!-- インナーブーム (伸縮部) -->
+              <line x1="${ux}" y1="${baseY - 12}" x2="${midX}" y2="${midY}" stroke="#ef4444" stroke-width="5" stroke-linecap="round" opacity="0.7"/>
+              <!-- 油圧シリンダー -->
+              <line x1="${ux - 4}" y1="${baseY - 6}" x2="${cylTX}" y2="${cylTY}" stroke="#94a3b8" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
+              <line x1="${ux - 4}" y1="${baseY - 6}" x2="${cylTX}" y2="${cylTY}" stroke="#cbd5e1" stroke-width="1.2" stroke-linecap="round" opacity="0.5"/>
+              <!-- ワイヤー -->
+              <line x1="${hkX}" y1="${hkY1}" x2="${hkX}" y2="${hkY2}" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3,2.5"/>
+              <!-- フック -->
+              <path d="M${(parseFloat(hkX) - 4).toFixed(1)},${(parseFloat(hkY2) - 3).toFixed(1)} Q${(parseFloat(hkX) - 4).toFixed(1)},${hkY2} ${hkX},${hkY2} Q${(parseFloat(hkX) + 4).toFixed(1)},${hkY2} ${(parseFloat(hkX) + 4).toFixed(1)},${(parseFloat(hkY2) - 5).toFixed(1)}" stroke="#cbd5e1" fill="none" stroke-width="2.5" stroke-linecap="round"/>
+            </g>
+          `;
+        }
+
+        const DY = GY + 40;
+        const BDY = BTY - 15;
+
+        const tpl = document.createElement('template');
+        tpl.innerHTML = `
+<svg class="thud-veh-svg" data-veh="${key}" viewBox="-80 ${TRX - 40} ${viewW} 320" width="100%" style="max-height:300px;">
+  <defs>
+    <pattern id="${woodId}" width="20" height="10" patternUnits="userSpaceOnUse">
+      <rect width="20" height="10" fill="#d97706"/>
+      <path d="M0 5 Q10 0 20 5" stroke="rgba(0,0,0,0.15)" fill="none" stroke-width="0.5"/>
+    </pattern>
+    <marker id="${arrowId}" markerWidth="8" markerHeight="8" refX="7" refY="2.5" orient="auto">
+      <path d="M0,0 L0,5 L7,2.5 z" fill="#64748b"/>
+    </marker>
+    <marker id="${arrowGId}" markerWidth="8" markerHeight="8" refX="7" refY="2.5" orient="auto">
+      <path d="M0,0 L0,5 L7,2.5 z" fill="rgba(245,158,11,0.9)"/>
+    </marker>
+    <linearGradient id="cabGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e2e8f0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 地面 -->
+  <line x1="-70" y1="${GY}" x2="${BX1 + 100}" y2="${GY}" stroke="#475569" stroke-width="2" stroke-dasharray="8,8"/>
+  <ellipse cx="${totalW / 2}" cy="${GY + 6}" rx="${totalW * 0.45}" ry="5" fill="rgba(0,0,0,0.15)"/>
+
+  <!-- シャシー -->
+  <rect x="${CX0}" y="${FBY}" width="${totalW - CX0}" height="8" fill="#1e293b" stroke="#0f172a"/>
+  
+  <!-- 荷台 (平ボディ) -->
+  <rect x="${BX0}" y="${BFY - 4}" width="${bedW}" height="6" fill="#2d3748"/>
+  <!-- あおり板 (白) -->
+  <rect x="${BX0}" y="${BTY}" width="${bedW}" height="${AORH}" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+  <!-- あおり横リブ -->
+  <line x1="${BX0}" y1="${BTY + AORH * 0.38}" x2="${BX1}" y2="${BTY + AORH * 0.38}" stroke="#e2e8f0" stroke-width="0.8"/>
+  <line x1="${BX0}" y1="${BTY + AORH * 0.68}" x2="${BX1}" y2="${BTY + AORH * 0.68}" stroke="#e2e8f0" stroke-width="0.8"/>
+  <!-- あおり縦骨 (均等に配置) -->
+  ${Array.from({ length: Math.max(3, Math.floor(bedW / 40)) }, (_, i) => {
+          const px = BX0 + bedW * (i + 1) / (Math.max(3, Math.floor(bedW / 40)) + 1);
+          return `<line x1="${px.toFixed(1)}" y1="${BTY}" x2="${px.toFixed(1)}" y2="${BFY}" stroke="#e2e8f0" stroke-width="0.9"/>`;
+        }).join('')}
+  <!-- 後端板 -->
+  <rect x="${BX1 - 5}" y="${BTY}" width="5" height="${BFY - BTY}" fill="#e2e8f0" stroke="#cbd5e1" stroke-width="0.8"/>
+  <!-- テールランプ -->
+  <rect x="${BX1}" y="${BTY + 3}" width="5" height="10" rx="1.5" fill="#ef4444" opacity="0.95"/>
+  <rect x="${BX1}" y="${BTY + 15}" width="5" height="6" rx="1" fill="#f97316" opacity="0.8"/>
+  <!-- 反射テープ -->
+  <rect x="${BX0 + 4}" y="${BFY - 5}" width="${bedW - 8}" height="3" rx="1" fill="#fbbf24" opacity="0.5"/>
+
+  <!-- 鳥居 -->
+  <rect x="${BX0 - 4}" y="${TRX}" width="7" height="${BFY - TRX}" fill="#64748b" stroke="#475569" stroke-width="0.8"/>
+  <rect x="${BX0 - 14}" y="${TRX}" width="25" height="7" fill="#334155" stroke="#475569" stroke-width="0.8" rx="1"/>
+
+  <!-- ユニック -->
+  ${unic}
+
+  <!-- キャブ (ホワイト・精細化) -->
+  <path d="${cabPath}" fill="url(#cabGrad)" stroke="#94a3b8" stroke-width="1.2"/>
+  <!-- フロントガラス -->
+  <path d="${winPath}" fill="rgba(186,230,253,0.32)" stroke="rgba(125,211,252,0.55)" stroke-width="0.8"/>
+  <!-- ガラス反射ハイライト -->
+  <path d="M${(CX0 + 12).toFixed(1)},${(BFY - 52).toFixed(1)} L${(CX0 + 12).toFixed(1)},${(BFY - 75).toFixed(1)} L${(fsTop + 10).toFixed(1)},${(CRY + 12).toFixed(1)} L${(fsTop + 4).toFixed(1)},${(CRY + 10).toFixed(1)} Z" fill="rgba(255,255,255,0.12)"/>
+  <!-- ドア分割線 -->
+  <line x1="${(CX0 + realCabW * 0.45).toFixed(1)}" y1="${(CRY + 5).toFixed(1)}" x2="${(CX0 + realCabW * 0.45).toFixed(1)}" y2="${BFY}" stroke="rgba(148,163,184,0.5)" stroke-width="1"/>
+  <!-- ドアハンドル -->
+  <rect x="${(CX0 + realCabW * 0.38).toFixed(1)}" y="${(BFY - 68).toFixed(1)}" width="14" height="4" rx="2" fill="#94a3b8" stroke="#64748b" stroke-width="0.8"/>
+  <!-- サイドミラー (大) -->
+  <rect x="${(CX0 - 20).toFixed(1)}" y="${(CRY + 18).toFixed(1)}" width="16" height="11" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+  <line x1="${CX0}" y1="${(CRY + 26).toFixed(1)}" x2="${(CX0 - 4).toFixed(1)}" y2="${(CRY + 23).toFixed(1)}" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- ヘッドランプ -->
+  <rect x="${CX0 - 10}" y="${BFY - 65}" width="9" height="22" rx="2" fill="#fef3c7" stroke="#eab308" stroke-width="0.8"/>
+  <rect x="${CX0 - 9}" y="${BFY - 64}" width="7" height="10" rx="1" fill="rgba(255,255,255,0.45)"/>
+  <!-- コーナーランプ (オレンジ) -->
+  <rect x="${(CX0 - 4).toFixed(1)}" y="${(BFY - 32).toFixed(1)}" width="8" height="12" rx="1.5" fill="#fbbf24" stroke="#f59e0b" stroke-width="0.8"/>
+  <!-- ルーフマーカー -->
+  <circle cx="${(CX0 + 8).toFixed(1)}" cy="${(CRY + 4).toFixed(1)}" r="3.5" fill="#fbbf24" opacity="0.85"/>
+  <!-- ステップ -->
+  <rect x="${CX0}" y="${(BFY - 40).toFixed(1)}" width="22" height="7" rx="1" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8"/>
+  <rect x="${CX0}" y="${(BFY - 26).toFixed(1)}" width="22" height="7" rx="1" fill="#e2e8f0" stroke="#94a3b8" stroke-width="0.8"/>
+
+  <!-- タイヤ -->
+  ${tire(FWX, false)}
+  ${tire(RWX, true)}
+  ${v.trailer ? tire(RWX - 55, true) : ''}
+
+  <!-- 寸法線 -->
+  <line x1="0" y1="${DY}" x2="${BX1}" y2="${DY}" stroke="#64748b" marker-start="url(#${arrowId})" marker-end="url(#${arrowId})"/>
+  <text x="${totalW / 2}" y="${DY + 14}" text-anchor="middle" font-size="11" fill="#64748b">L=${v.len}</text>
+  <line x1="${BX0}" y1="${BDY}" x2="${BX1}" y2="${BDY}" stroke="rgba(245,158,11,0.9)" marker-start="url(#${arrowGId})" marker-end="url(#${arrowGId})"/>
+  <text x="${BX0 + bedW * 0.5}" y="${BDY - 5}" text-anchor="middle" font-size="10" fill="rgba(245,158,11,1)">BED ${v.bed}</text>
+
+  <!-- 積荷 -->
+  <g id="${cargoGroupId}"></g>
+</svg>`.trim();
+
+        const svg = tpl.content.firstElementChild;
+        return { svg, scale: S, toriiX: BX0, bedEnd: BX1, bedFloor: BFY, bedTop: TRX, woodPatternId: woodId, cargoGroupId };
+      }
+
+      // ── ヘルパー関数群 ────────────────────────────────────────
+      function ensureVehicleSvgs() {
+        if (Object.keys(svgRefs).length) return;
+        const deck = $('truckSvgDeck');
+        if (!deck) return;
+        Object.entries(vehicles).forEach(([key, v]) => {
+          const ref = createVehicleSvg(key, v);
+          deck.appendChild(ref.svg);
+          ref.cargoGroup = ref.svg.querySelector('#' + ref.cargoGroupId);
+          svgRefs[key] = ref;
+        });
+      }
+
+      function showActiveSvg(key) {
+        Object.entries(svgRefs).forEach(([k, ref]) => {
+          ref.svg.classList.toggle('active', k === key);
+        });
+      }
+
+      function renderHud() {
+        ensureVehicleSvgs();
+        const v = vehicles[hudState.vehKey];
+        const ref = svgRefs[hudState.vehKey];
+        if (!v || !ref || !ref.cargoGroup) return;
+        showActiveSvg(hudState.vehKey);
+
+        $('thudValVl').textContent = v.len.toLocaleString();
+        $('thudValBl').textContent = v.bed.toLocaleString();
+
+        const cg = ref.cargoGroup;
+        cg.innerHTML = '';
+        const ohEl = $('thudStatOh');
+        const legalEl = $('thudStatLegal');
+        ohEl.className = 'thud-stat';
+        legalEl.className = 'thud-stat';
+
+        let overhang = 0;
+        const limitLen = v.len * 1.2;
+        $('thudValLimit').textContent = Math.floor(limitLen).toLocaleString();
+
+        const toriiX = ref.toriiX;
+        const bedEnd = ref.bedEnd;
+        const bedFloor = ref.bedFloor;
+        const bedTop = ref.bedTop;
+        const S = ref.scale;
+
+        if (hudState.mode !== 'none') {
+          let lMm = hudState.lumberLen;
+          if (hudState.mode === 'max') {
+            lMm = limitLen;
+            $('hudLumberLen').value = lMm / 1000;
+            $('hudLumberLenVal').textContent = (lMm / 1000).toFixed(1);
+          }
+          const lPx = lMm * S;
+          const lH = 11;
+
+          if (hudState.mode === 'flat' || hudState.mode === 'max') {
+            const startX = hudState.mode === 'max' ? toriiX - 25 : toriiX + 15;
+            const endX = startX + lPx;
+            overhang = Math.max(0, (endX - bedEnd) / S);
+            for (let i = 0; i < hudState.count; i++) {
+              mkRect(cg, startX, bedFloor - 4 - 8 - i * (lH + 2), lPx, lH, ref.woodPatternId);
+            }
+          } else if (hudState.mode === 'diagonal') {
+            // 写真を参考に、荷台後方から鳥居の頂点を通る角度
+            const sx = bedEnd - 50;
+            const sy = bedFloor - 12;
+            const ty = bedTop + 5; // 鳥居の少し上を通る
+            const tx = toriiX;
+            const aRad = Math.atan2(sy - ty, sx - tx);
+            const aDeg = aRad * 180 / Math.PI;
+
+            for (let i = 0; i < hudState.count; i++) {
+              mkRotRect(cg, sx, sy - i * 6, lPx, lH, aDeg, ref.woodPatternId);
+            }
+            // 先端の座標からオーバーハング（前出し）を計算
+            const tipX = sx - Math.cos(aRad) * lPx;
+            if (tipX < 0) overhang = -tipX / S;
+
+            // 固定ロープ風のライン (オプション)
+            const rope = document.createElementNS(NS, 'line');
+            rope.setAttribute('x1', tx); rope.setAttribute('y1', sy);
+            rope.setAttribute('x2', tx); rope.setAttribute('y2', ty - 10);
+            rope.setAttribute('stroke', 'rgba(251,191,36,0.6)');
+            rope.setAttribute('stroke-width', '1');
+            cg.appendChild(rope);
+          }
+        }
+
+        $('thudValOh').textContent = Math.floor(overhang).toLocaleString();
+        const curTotal = v.len + (hudState.mode !== 'none' ? overhang : 0);
+        if (curTotal > limitLen) { ohEl.classList.add('danger'); legalEl.classList.add('danger'); }
+        else if (overhang > 0) { ohEl.classList.add('warning'); }
+      }
+
+      function mkRect(parent, x, y, w, h, patternId) {
+        const r = document.createElementNS(NS, 'rect');
+        r.setAttribute('x', x); r.setAttribute('y', y);
+        r.setAttribute('width', w); r.setAttribute('height', h);
+        r.setAttribute('class', 'thud-lumber');
+        r.setAttribute('fill', 'url(#' + patternId + ')');
+        parent.appendChild(r);
+      }
+      function mkRotRect(parent, x, y, w, h, deg, patternId) {
+        const r = document.createElementNS(NS, 'rect');
+        r.setAttribute('x', x - w); r.setAttribute('y', y - h);
+        r.setAttribute('width', w); r.setAttribute('height', h);
+        r.setAttribute('class', 'thud-lumber');
+        r.setAttribute('fill', 'url(#' + patternId + ')');
+        r.setAttribute('transform', `rotate(${deg},${x},${y})`);
+        parent.appendChild(r);
+      }
+
+      renderHud();
+    })();
+  </script>
+
+  <!-- Legacy inline block; active logic moved to src/ui/pageChrome.js + src/ui/workflowController.js -->
+  <script type="application/x-disabled" data-legacy-module="src/ui/pageChrome.js">
+    (function () {
+      const $ = (id) => document.getElementById(id);
+
+      function normalizeVehShort(value) {
+        const raw = String(value || '').trim().toLowerCase();
+        if (!raw) return '2t';
+        if (raw.startsWith('2t')) return '2t';
+        if (raw.startsWith('3t')) return '3t';
+        if (raw.startsWith('4t')) return '4t';
+        if (raw.startsWith('10t')) return '10t';
+        if (raw === 'custom') return 'custom';
+        return raw;
+      }
+
+      function syncVehicleCards(nextValue) {
+        const short = normalizeVehShort(nextValue);
+        document.querySelectorAll('#vehCardRow .veh-card').forEach((btn) => {
+          btn.classList.toggle('active', (btn.dataset.veh || '') === short);
+        });
+      }
+
+      document.querySelectorAll('#vehCardRow .veh-card').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sel = $('vehiclePreset');
+          if (!sel) return;
+          const next = String(btn.dataset.veh || '');
+          if (!next) return;
+          if (sel.value !== next) sel.value = next;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          syncVehicleCards(next);
+        });
+      });
+
+      $('vehiclePreset')?.addEventListener('change', (e) => {
+        syncVehicleCards(e.target?.value);
+      });
+
+      syncVehicleCards($('vehiclePreset')?.value || '2t');
+
+      $('wfDockToggle')?.addEventListener('click', () => {
+        $('workflowDock')?.classList.toggle('collapsed');
+      });
+
+      // ─── Wizard step updater ──────────────────────────────────
+      const vehNames = { '2t': '2tトラック', '3t': '3tトラック', '4t': '4tトラック', '10t': '10tトラック', 'custom': 'カスタム' };
+
+      function hasRoads() {
+        // renderStatusMessage sets this text when no road data is loaded
+        const msg = $('status-message')?.textContent || '';
+        return !msg.includes('Load road data');
+      }
+
+      function hasRoute() {
+        const resetBtn = $('reset-route');
+        const confirmBtn = $('confirm-route');
+        return (resetBtn && !resetBtn.disabled) || (confirmBtn && !confirmBtn.disabled);
+      }
+
+      function hasResult() {
+        const chip = $('resultChip');
+        return chip && chip.style.display !== 'none';
+      }
+
+      function getActiveVehicle() {
+        const active = document.querySelector('#vehCardRow .veh-card.active');
+        return active ? active.dataset.veh : ($('vehiclePreset')?.value || '2t');
+      }
+
+      function updateWizard() {
+        const s1 = hasRoads();
+        const s2 = true; // vehicle always chosen
+        const s3 = hasRoute();
+        const s4 = hasResult();
+        const s5 = s4;
+
+        // Step 1: 道路データ
+        // Step 2: 車両選択
+        // Step 3: 経路設定
+        // Step 4: 判定実行
+        // Step 5: 結果確認
+        const dones = [s1, s2, s3, s4, s5];
+        const actives = [
+          !s1,
+          s1 && !s3,       // 車両選択は道路OK後にアクティブ
+          s1 && !s3,       // 経路設定も並行
+          s1 && s3 && !s4, // 判定はルート確定後
+          s4               // 結果確認は判定後
+        ];
+
+        // Correct logic: active = current step
+        const currentStep = !s1 ? 0 : (!s3 ? 2 : (!s4 ? 3 : 4));
+        [0, 1, 2, 3, 4].forEach(i => {
+          const el = $('wfStep' + (i + 1));
+          if (!el) return;
+          el.classList.remove('done', 'active');
+          if (i < currentStep) el.classList.add('done');
+          else if (i === currentStep) el.classList.add('active');
+        });
+
+        // State labels
+        const veh = getActiveVehicle();
+        if ($('wfState1')) $('wfState1').textContent = s1 ? '✓ 読込済' : '未読込';
+        if ($('wfState2')) $('wfState2').textContent = vehNames[veh] || veh;
+        if ($('wfState3')) $('wfState3').textContent = s3 ? '✓ 設定済' : '未設定';
+        if ($('wfState4')) $('wfState4').textContent = s4 ? '✓ 完了' : '待機';
+        if ($('wfState5')) $('wfState5').textContent = s4 ? '確認可' : '-';
+
+        // Step label
+        if ($('wfStepLabel')) $('wfStepLabel').textContent = 'ステップ ' + (currentStep + 1) + ' / 5';
+
+        // Hint & action button
+        const actionBtn = $('wfActionBtn');
+        const hintEl = $('wfHint');
+
+        if (!s1) {
+          if (hintEl) hintEl.textContent = '⚠️ まず「道路データ取得」を押してください。これをしないと経路が道路上を走りません。';
+          if (actionBtn) { actionBtn.textContent = '🔄 道路データを取得'; actionBtn.onclick = () => $('refresh-data')?.click(); }
+        } else if (!s3) {
+          if (hintEl) hintEl.textContent = '地図をクリックして端点を2つ以上追加してください。';
+
+          if (actionBtn) {
+            actionBtn.textContent = '📌 端点追加モードへ';
+            actionBtn.onclick = () => {
+              const panel = $('sidePanel');
+              if (panel?.getAttribute('aria-hidden') !== 'false') $('toggleSettingsPanel')?.click();
+              const epBtn = $('toggleManualEndpointMode');
+              if (epBtn && !epBtn.classList.contains('active')) epBtn.click();
+            };
+          }
+        } else if (!s4) {
+          if (hintEl) hintEl.textContent = window._isAssessing ? '⏳ 判定を実行中です...' : '経路が確定しました。上の「搬入判定を実行」ボタンを押してください。';
+          if (actionBtn) actionBtn.style.display = 'none';
+        } else {
+          if (hintEl) hintEl.textContent = '判定が完了しました。左下の結果カードを確認してください。';
+          if (actionBtn) { actionBtn.textContent = '📄 結果を詳しく見る'; actionBtn.onclick = () => $('chipExpandBtn')?.click(); }
+        }
+
+        // Map guide
+        const guideTexts = [
+          '⚠️ 先に「🔄 道路データ取得」を押してください（道路に沿って経路を引くために必要です）',
+          '📍 地図をクリックして端点を2点以上追加 → 上部「搬入判定を実行」で判定',
+          '▶ 「搬入判定を実行」ボタンで判定を開始',
+          '✅ 判定完了 — 結果カードを確認してください',
+        ];
+        const guideIdx = !s1 ? 0 : (!s3 ? 1 : (!s4 ? 2 : 3));
+        if ($('mapGuideText')) $('mapGuideText').textContent = guideTexts[guideIdx];
+
+        // Dynamic pulse animation targeting the next crucial action button
+        const refreshBtn = document.getElementById('topRefreshData');
+        const assessBtn = document.getElementById('runDeliveryAssessment');
+        const printBtn = document.getElementById('printDeliveryReport');
+        
+        refreshBtn?.classList.remove('wf-pulse');
+        assessBtn?.classList.remove('wf-pulse');
+        printBtn?.classList.remove('wf-pulse');
+        
+        if (!s1) {
+          refreshBtn?.classList.add('wf-pulse');
+        } else if (s1 && !s3) {
+          // Point entry step (guided on map)
+        } else if (s1 && s3 && !s4) {
+          assessBtn?.classList.add('wf-pulse');
+        } else if (s4) {
+          printBtn?.classList.add('wf-pulse');
+        }
+      }
+
+      setInterval(updateWizard, 600);
+      updateWizard();
+
+      // ──────────────────────────────────────────────────────────────────
+      // Street View expand button
+      // ──────────────────────────────────────────────────────────────────
+      $('svExpandBtn')?.addEventListener('click', () => {
+        const vp = $('svViewport');
+        if (!vp) return;
+        vp.classList.toggle('sv-expanded');
+        $('svExpandBtn').textContent = vp.classList.contains('sv-expanded') ? '✕' : '⛶';
+      });
+
+      // ──────────────────────────────────────────────────────────────────
+      // Server Panel — YOLO & Ollama status + start buttons
+      // ──────────────────────────────────────────────────────────────────
+      (function initServerPanel() {
+        const WEB_ORIGIN = window.location.origin;  // e.g. http://127.0.0.1:8080
+
+        // AbortSignal.timeout() polyfill for older WebViews
+        function fetchT(url, opts, ms) {
+          if (typeof AbortSignal.timeout === 'function') {
+            return fetch(url, { ...opts, signal: AbortSignal.timeout(ms) });
+          }
+          const ctrl = new AbortController();
+          const id = setTimeout(() => ctrl.abort(), ms);
+          return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(id));
+        }
+
+        // YOLO origin is read dynamically from the same input field used by analysis
+        function getYoloOrigin() {
+          const v = (document.getElementById('yoloApiBase')?.value || '').trim().replace(/\/$/, '');
+          if (v) return v;
+          const cfg = window.LOGISTICS_RUNTIME_CONFIG || window.USER_CONFIG || {};
+          if (cfg?.yoloServerUrl) return cfg.yoloServerUrl.replace(/\/$/, '');
+          // 同じホストのポート8001（SSHポートフォワーディングでも直接IPアクセスでも動く）
+          return `${window.location.protocol}//${window.location.hostname}:8001`;
+        }
+
+        function setDot(id, state) {  // state: 'running' | 'stopped' | 'starting' | 'unknown'
+          const el = $('srvDot' + id);
+          if (!el) return;
+          el.className = 'srv-dot ' + (state === 'unknown' ? '' : state);
+        }
+        function setLabel(id, txt) {
+          const el = $('srvLabel' + id);
+          if (el) el.textContent = txt;
+        }
+        function setBtn(id, running, starting) {
+          const btn = $('srvStart' + id);
+          if (!btn) return;
+          btn.disabled = running || starting;
+          btn.textContent = starting ? '起動中…' : (running ? '稼働中' : '起動');
+        }
+
+        let yoloRunning = false;
+
+        function updateAllOk() {
+          const ok = $('srvAllOk');
+          if (!ok) return;
+          ok.style.display = yoloRunning ? '' : 'none';
+        }
+
+        async function checkYolo() {
+          // Only available via web_server.py; skip silently on other servers (e.g. Live Server)
+          if (window.location.port !== '8080') {
+            setDot('Yolo', 'unknown'); setLabel('Yolo', '–'); setBtn('Yolo', false, false);
+            return;
+          }
+          try {
+            const res = await fetchT(`${WEB_ORIGIN}/api/status`, {}, 2000);
+            if (!res.ok) throw new Error();
+            const d = await res.json();
+            yoloRunning = d.yolo === 'running';
+          } catch { yoloRunning = false; }
+          setDot('Yolo', yoloRunning ? 'running' : 'stopped');
+          setLabel('Yolo', yoloRunning ? 'running' : 'stopped');
+          setBtn('Yolo', yoloRunning, false);
+          updateAllOk();
+        }
+
+        async function pollAll() {
+          await checkYolo();
+        }
+
+        // Start YOLO via web server
+        $('srvStartYolo')?.addEventListener('click', async () => {
+          if (window.location.port !== '8080') {
+            alert('起動_ローカル.bat でアプリを起動してください (port 8080)\nLive Server (port 5501) ではYOLO自動起動は使えません。');
+            return;
+          }
+          setDot('Yolo', 'starting');
+          setLabel('Yolo', '起動中…');
+          setBtn('Yolo', false, true);
+          try {
+            const res = await fetchT(`${WEB_ORIGIN}/api/start-yolo`, { method: 'POST' }, 8000);
+            if (!res.ok) {
+              setDot('Yolo', 'stopped');
+              setLabel('Yolo', `起動失敗 (HTTP ${res.status})`);
+              setBtn('Yolo', false, false);
+              return;
+            }
+            const d = await res.json();
+            if (d.status === 'already-running') { await checkYolo(); return; }
+            // Poll until YOLO responds (up to 15 s)
+            for (let i = 0; i < 15; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              await checkYolo();
+              if (yoloRunning) return;
+            }
+            setDot('Yolo', 'stopped');
+            setLabel('Yolo', '起動失敗');
+            setBtn('Yolo', false, false);
+          } catch (e) {
+            setDot('Yolo', 'stopped');
+            setLabel('Yolo', e.message || '起動失敗');
+            setBtn('Yolo', false, false);
+          }
+        });
+
+        // Initial poll + interval
+        pollAll();
+        setInterval(pollAll, 6000);
+      })();
+    })();
+  </script>
+</body>
+
+</html>

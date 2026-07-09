@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LOGISTICS OS index3D V1.0</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="./index3D_V1.0.css" />
+  <!-- THREE 繧貞腰荳繧､繝ｳ繧ｹ繧ｿ繝ｳ繧ｹ蛹厄ｼ・LATEAU 3d-tiles-renderer 縺ｨ蜈ｱ譛峨＠縺ｦ "Multiple instances" 陦晉ｪ√ｒ髦ｲ縺撰ｼ・-->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.167.0/build/three.module.js",
+      "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.167.0/examples/jsm/controls/OrbitControls.js",
+      "three/examples/jsm/": "https://unpkg.com/three@0.167.0/examples/jsm/",
+      "three/addons/": "https://unpkg.com/three@0.167.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script>
+    window.TRUCK_DEFAULT_VIEW_MODE = '3d';
+    window.TRUCK_DEFAULT_PHOTOREALISTIC = false;
+    window.USE_GOOGLE_2D_TILES = true;
+    // Road/world loading resolves matching PLATEAU data automatically. Keep OSM
+    // extrusions visible so missing/slow tiles never make buildings disappear.
+    window.PLATEAU_DISABLE = false;
+    window.PLATEAU_KEEP_OSM_BUILDINGS = true;
+    window.PLATEAU_AUTO_DISABLE = false;
+    window.PLATEAU_ALLOW_IMPLICIT_LOOKUP = false;
+    window.PLATEAU_PREFER_LOD = 'lod1';
+    window.PLATEAU_LOD_SCALE = 0.25;
+    window.PLATEAU_OPACITY = 0.22;
+    window.TRUCK_TRAIL_MODE = 'footprint';
+    window.TRUCK_TRAIL_RADIUS_M = 0.22;
+    window.TRUCK_TRAIL_HEIGHT_M = 0.28;
+    window.TRUCK_TRAIL_VOLUME_ALPHA = 0.1;
+    window.GROUND_TEXTURE_SATURATION = 1.0;
+    window.GROUND_TEXTURE_BRIGHTNESS = 1.0;
+    window.GROUND_TEXTURE_CONTRAST = 1.0;
+    window.GROUND_TEXTURE_BLUR_PX = 0;
+    window.GROUND_TEXTURE_TINT_ALPHA = 0;
+    window.BUILDING_FILL_OPACITY = 0.62;
+    window.BUILDING_ROOF_OPACITY = 0.5;
+    window.BUILDING_EDGE_OPACITY = 1.0;
+    window.ROAD_SURFACE_ALPHA = 0.16;
+    window.AUTODRIVE_OFFSET_RESPONSE_S = 1.35;
+    window.AUTODRIVE_OFFSET_MAX_RATE_MPS = 0.55;
+    // Renderer quality knobs (Three.js scene).
+    window.THREE3D_PIXEL_RATIO_MAX = 1.25;
+    window.THREE3D_ANTIALIAS = false;
+  </script>
+</head>
+
+<body class="index3d route-mode">
+  <main class="index3d-shell">
+    <section id="map3dWrap" class="index3d-view open" aria-hidden="false">
+      <div id="map3d"></div>
+      <section id="routeMapStage" class="route-map-stage" aria-label="route map">
+        <header class="route-map-head">
+          <div>
+            <div class="eyebrow">ROUTE MAP</div>
+            <h2 id="routeMapTitle">Select start and goal</h2>
+          </div>
+          <div class="route-map-status">
+            <span id="routeMapCaption">Load roads, then click start and goal.</span>
+            <strong id="routeMapScope">Roads: visible map / 3D: route corridor 250m</strong>
+          </div>
+        </header>
+        <div id="map"></div>
+      </section>
+      <aside id="map3dPanel" class="index3d-sim-panel">
+        <header class="panel-head">
+          <span>3D SIM</span>
+          <div class="button-row">
+            <button class="ctrl-btn ghost small" id="index3dPanelPlay" type="button">Play</button>
+            <button class="ctrl-btn ghost small" id="index3dPanelPause" type="button">Pause</button>
+            <button class="ctrl-btn danger small" id="index3dPanelReset" type="button">Reset</button>
+          </div>
+        </header>
+        <div class="panel-body">
+          <div>Model: <span id="map3dModelStatus">kinematic bicycle</span></div>
+          <div id="tilesStatus">3D ground: waiting</div>
+          <div>Poses: <span id="map3dPoseCount">0</span></div>
+          <div>Speed: <span id="map3dSpeedStatus">0.0km/h</span></div>
+          <div>Steer: <span id="map3dSteerStatus">0.0deg</span></div>
+          <div>Autonomy: <span id="map3dAutonomyStatus">standby</span></div>
+          <div>Sensor: <span id="map3dSensorStatus">-</span></div>
+          <div>Contacts: <span id="map3dCollisionCount">0</span></div>
+        </div>
+      </aside>
+    </section>
+
+    <aside class="index3d-control">
+      <header class="app-head">
+        <div>
+          <div class="eyebrow">LOGISTICS OS</div>
+          <h1>index3D V1.0</h1>
+        </div>
+        <div class="status-pill" id="index3dStatus">Starting...</div>
+      </header>
+
+      <section class="control-section route-builder-section">
+        <h2>Route</h2>
+        <div class="route-flow" aria-label="route setup progress">
+          <div id="routeStepRoads" class="route-step active">
+            <b>1 Roads</b>
+            <span id="routeRoadState">not loaded</span>
+          </div>
+          <div id="routeStepPoints" class="route-step">
+            <b>2 Points</b>
+            <span id="routePointState">0/2</span>
+          </div>
+          <div id="routeStepConfirm" class="route-step">
+            <b>3 Confirm</b>
+            <span id="routeConfirmState">waiting</span>
+          </div>
+          <div id="routeStepWorld" class="route-step">
+            <b>4 3D</b>
+            <span id="routeWorldState">waiting</span>
+          </div>
+        </div>
+        <div class="route-next">
+          <div>
+            <strong id="routeGuideTitle">Load road data</strong>
+            <span id="routeGuideHint">Load roads for the current map view first.</span>
+          </div>
+          <button id="routeGuidePrimary" class="ctrl-btn primary wide" type="button">1. Load roads</button>
+        </div>
+        <label class="field">
+          <span>Place search</span>
+          <div class="inline-search">
+            <input id="search-input" class="ctrl-input" type="text" autocomplete="off" placeholder="Search address or place" />
+            <button id="search-button" class="ctrl-btn ghost" type="button">Go</button>
+          </div>
+        </label>
+        <div class="button-grid route-actions">
+          <button id="topRefreshData" class="ctrl-btn ghost" type="button">Refresh roads</button>
+          <button id="toggleManualEndpointMode" class="ctrl-btn ghost toggle active" type="button">Point add ON</button>
+          <button id="confirm-route" class="ctrl-btn primary" type="button" disabled>Confirm this route</button>
+          <button id="reset-route" class="ctrl-btn ghost" type="button" disabled>Reset</button>
+          <button id="clear-endpoints" class="ctrl-btn ghost" type="button" disabled>Clear points</button>
+          <button id="index3dDemoRoute" class="ctrl-btn ghost" type="button">Demo route</button>
+        </div>
+        <label class="check-row">
+          <input id="index3dAutoWorld" type="checkbox" checked />
+          <span>Load 3D world automatically after route confirmation</span>
+        </label>
+        <label class="check-row route-policy-row">
+          <input id="permitShortestRoute" type="checkbox" />
+          <span>Permit shortest route</span>
+        </label>
+        <div id="routePolicyStatus" class="sub-status">Route policy: obey one-way restrictions.</div>
+        <div id="status-message" class="sub-status">Load roads, add endpoints, confirm route, then run 3D simulation.</div>
+        <div id="advancedMeta" class="sub-status">Points: 0 / Route: not confirmed</div>
+        <ul id="selected-roads-list" class="route-list"></ul>
+        <div id="routeCandidatesPanel" class="route-candidates"></div>
+        <button id="refresh-data" type="button" hidden></button>
+        <input id="autoSatYoloBeforeRoute" type="checkbox" hidden />
+      </section>
+
+      <section class="control-section">
+        <h2>3D World</h2>
+        <div class="split-fields">
+          <label class="field">
+            <span>AOI radius</span>
+            <input id="index3dRadius" class="ctrl-input" type="number" min="80" max="500" step="10" value="250" />
+          </label>
+          <label class="field">
+            <span>Road source</span>
+            <select id="roadDataSource" class="ctrl-input">
+              <option value="hybrid" selected>Hybrid</option>
+              <option value="osm">OSM</option>
+              <option value="gsi">GSI</option>
+            </select>
+          </label>
+        </div>
+        <div class="three-road-controls">
+          <label class="field road-alpha-field">
+            <span>Road surface alpha <b id="roadSurfaceAlphaValue">0.10</b></span>
+            <input id="roadSurfaceAlpha" type="range" min="0.03" max="0.35" step="0.01" value="0.10" />
+          </label>
+          <div class="three-layer-grid" aria-label="3D road layer visibility">
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="roadSurface" checked /><span>Road surface</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="road" checked /><span>Road lines</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="centerline" checked /><span>Centerline</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="roadEdge" checked /><span>Road edge</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="sidewalk" checked /><span>Sidewalk</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="route" checked /><span>Route</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="onewayArrow" checked /><span>One-way arrows</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="intersectionCap" checked /><span>Intersection widening</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="building" checked /><span>Buildings</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="buildingFootprint" /><span>Building footprint</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="sweptArea" checked /><span>Swept area</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="truckTrail" checked /><span>Truck trail</span></label>
+          </div>
+          <label class="field road-alpha-field">
+            <span>PLATEAU height <b id="plateauYOffsetValue">-3.5m</b></span>
+            <input id="plateauYOffset" type="range" min="-15" max="5" step="0.5" value="-3.5" />
+          </label>
+        </div>
+        <label class="field">
+          <span>PLATEAU buildings URL</span>
+          <input id="plateauBuildingsUrl" class="ctrl-input" type="url" placeholder="optional GeoJSON URL" />
+        </label>
+        <input id="plateauUrlInput" type="hidden" />
+        <button id="index3dLoadWorld" class="ctrl-btn primary wide" type="button">Load 3D World</button>
+        <div id="buildingStatus" class="sub-status">Buildings: not loaded</div>
+      </section>
+
+      <section class="control-section road-width-section">
+        <h2>Road width <span class="phase-tag">Phase 2</span></h2>
+        <div id="roadWidthSummary" class="sub-status">After building the 3D world, this panel shows adopted road widths and their source: OSM, lane estimate, road class, YOLO, or manual override.</div>
+        <div class="road-width-editor" id="roadWidthEditor" hidden>
+          <div class="rw-selected">Selected: <b id="rwSelectedName">-</b> <span id="rwSelectedId" class="rw-id"></span></div>
+          <div class="rw-row">
+            <input id="roadWidthInput3d" class="ctrl-input" type="number" min="2" max="40" step="0.1" placeholder="width (m)" />
+            <button id="rwApply" class="ctrl-btn primary small" type="button">Apply</button>
+            <button id="rwReset" class="ctrl-btn ghost small" type="button">Reset</button>
+          </div>
+          <div class="rw-hint">Applied widths update the 3D drive surface and contact checks immediately.</div>
+        </div>
+        <div id="roadWidthList" class="road-width-list" aria-label="Road width list"></div>
+      </section>
+
+      <section class="control-section solid-section">
+        <h2>Solids / obstacles <span class="phase-tag phase3">Phase 3</span></h2>
+        <div id="solidSummary" class="sub-status">After building the 3D world, this panel shows building solids, ground obstacles, and overhead clearance checks.</div>
+        <div class="solid-note">Overhead masks use heightOnly / clearanceHeight / h values and compare vehicle height plus load height.</div>
+        <div id="solidList" class="solid-list" aria-label="Solid and obstacle checks"></div>
+      </section>
+
+      <section class="control-section autonomy-section">
+        <h2>Autonomy <span class="phase-tag phase4">Phase 4</span></h2>
+        <div id="autonomySummary" class="sub-status">After building the 3D world, this panel shows forward sensor checks, speed limits, stop decisions, and steering saturation.</div>
+        <div id="autonomyList" class="autonomy-list" aria-label="Autonomy planner events"></div>
+      </section>
+
+      <section class="control-section perception-section">
+        <h2>SV / YOLO scan <span class="phase-tag phase5">Phase 5</span></h2>
+        <div id="perceptionSummary" class="sub-status">Run a Street View / YOLO scan to generate road-width candidates and obstacle proxies.</div>
+        <div class="button-grid">
+          <button id="perceptionRun" class="ctrl-btn primary" type="button">Run SV/YOLO</button>
+          <button id="perceptionRealRun" class="ctrl-btn ghost" type="button" hidden>Fixture scan</button>
+          <button id="perceptionClear" class="ctrl-btn ghost" type="button">Clear scan</button>
+        </div>
+        <div class="perception-note">Only actual Street View / YOLO detections are drawn here. If the server or API key is missing, no obstacle proxy is injected.</div>
+        <div id="perceptionList" class="perception-list" aria-label="Perception suggestions and obstacles"></div>
+      </section>
+
+      <section class="control-section">
+        <h2>Truck</h2>
+        <label class="field">
+          <span>Vehicle</span>
+          <select id="vehiclePreset" class="ctrl-input"></select>
+        </label>
+        <label class="field">
+          <span>Speed <b id="index3dSpeedValue">18km/h</b></span>
+          <input id="index3dSpeed" type="range" min="4" max="35" value="18" step="1" />
+        </label>
+        <label class="field">
+          <span>Simulation speed <b id="playbackSpeedValue">x1.00</b></span>
+          <input id="playbackSpeed" type="range" min="0.25" max="4.0" step="0.25" value="1.0" />
+        </label>
+        <label class="field">
+          <span>Cargo</span>
+          <select id="index3dCargoLoad" class="ctrl-input">
+            <option value="none">None</option>
+            <option value="wood">Wood</option>
+          </select>
+        </label>
+        <div class="split-fields cargo-fields">
+          <label class="field">
+            <span>Wood length (m)</span>
+            <input id="index3dCargoLength" class="ctrl-input" type="number" min="0.5" max="12" value="6.0" step="0.1" />
+          </label>
+          <label class="field">
+            <span>Count</span>
+            <input id="index3dCargoCount" class="ctrl-input" type="number" min="1" max="24" value="1" step="1" />
+          </label>
+          <label class="field">
+            <span>Bundle width (mm)</span>
+            <input id="index3dCargoWidth" class="ctrl-input" type="number" min="100" max="2500" value="1000" step="50" />
+          </label>
+          <label class="field">
+            <span>Placement</span>
+            <select id="index3dCargoPlacement" class="ctrl-input">
+              <option value="center">Center</option>
+              <option value="left">Left</option>
+              <option value="right">Right</option>
+            </select>
+          </label>
+        </div>
+        <div class="button-grid">
+          <button id="index3dRun" class="ctrl-btn primary" type="button">Run</button>
+          <button id="index3dPause" class="ctrl-btn ghost" type="button">Pause</button>
+          <button id="index3dReset" class="ctrl-btn ghost" type="button">Reset</button>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <div><span>Distance</span><strong id="metricDistance">-</strong></div>
+        <div><span>Route pts</span><strong id="metricRoutePoints">0</strong></div>
+        <div><span>AOI</span><strong id="metricAoi">-</strong></div>
+        <div><span>Roads</span><strong id="metricRoads">0</strong></div>
+        <div><span>Buildings</span><strong id="metricBuildings">0</strong></div>
+        <div><span>Contacts</span><strong id="metricContacts">0</strong></div>
+      </section>
+
+      <section class="control-section log-section">
+        <h2>Log</h2>
+        <div id="index3dLog"></div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="svViewport" hidden>
+    <div id="svPano"></div>
+  </div>
+  <div id="toast"></div>
+
+
+  <!-- Sprint1 P0-5: persistent attribution footer + detail modal.
+       Required by PLATEAU(MLIT) / OpenStreetMap(ODbL) / Google Maps Tiles terms. -->
+  <button id="attributionToggle" type="button" class="attribution-toggle"
+          aria-haspopup="dialog" aria-controls="attributionModal"
+          title="License / Attribution">
+    (c) Map data
+  </button>
+  <div id="attributionModal" class="attribution-modal" role="dialog" aria-modal="true"
+       aria-labelledby="attributionModalTitle" hidden>
+    <div class="attribution-modal-backdrop" data-attribution-close></div>
+    <div class="attribution-modal-panel" role="document">
+      <header class="attribution-modal-head">
+        <h2 id="attributionModalTitle">License / Attribution</h2>
+        <button type="button" class="attribution-modal-close" data-attribution-close aria-label="Close">x</button>
+      </header>
+      <div class="attribution-modal-body">
+        <section>
+          <h3>Building 3D data (PLATEAU)</h3>
+          <p>3D city model data is sourced from MLIT "Project PLATEAU" 3D Tiles
+            (delivered via Re:Earth CMS). Used under PLATEAU terms with
+            attribution as required.</p>
+          <p><small>Source: MLIT Project PLATEAU /
+            <a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener noreferrer">mlit.go.jp/plateau/</a></small></p>
+        </section>
+        <section>
+          <h3>Road and feature data (OpenStreetMap)</h3>
+          <p>Road geometry and tags are sourced from OpenStreetMap contributors
+            (fetched via the Overpass API), used under the Open Database License (ODbL).</p>
+          <p><small>(c) OpenStreetMap contributors -
+            <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">openstreetmap.org/copyright</a></small></p>
+        </section>
+        <section>
+          <h3>Map tiles / Street View (Google Maps Platform)</h3>
+          <p>2D map tiles, satellite imagery and Street View panoramas come from
+            Google Maps Platform under the Google Maps Terms. Caching and
+            derivative use are kept within the terms.</p>
+          <p><small>Map data (c) Google /
+            <a href="https://cloud.google.com/maps-platform/terms" target="_blank" rel="noopener noreferrer">Google Maps Platform Terms</a></small></p>
+        </section>
+        <section>
+          <h3>Elevation / reverse geocoding (GSI)</h3>
+          <p>Reverse geocoder and tile services are provided by the Geospatial
+            Information Authority of Japan (GSI).</p>
+          <p><small>Source: GSI /
+            <a href="https://www.gsi.go.jp/" target="_blank" rel="noopener noreferrer">gsi.go.jp</a></small></p>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var btn = document.getElementById('attributionToggle');
+      var modal = document.getElementById('attributionModal');
+      if (!btn || !modal) return;
+      function open() {
+        modal.hidden = false;
+        modal.classList.add('open');
+      }
+      function close() {
+        modal.hidden = true;
+        modal.classList.remove('open');
+      }
+      btn.addEventListener('click', open);
+      modal.querySelectorAll('[data-attribution-close]').forEach(function (el) {
+        el.addEventListener('click', close);
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !modal.hidden) close();
+      });
+    })();
+  </script>
+
+  <script src="runtime-config.js"></script>
+  <script src="user_config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/polygon-clipping@0.15.3/dist/polygon-clipping.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
+  <!-- THREE 0.132 繧偵Δ繧ｸ繝･繝ｼ繝ｫ縺ｧ隱ｭ縺ｿ霎ｼ縺ｿ window.THREE 縺ｫ蜈ｬ髢具ｼ域里蟄倥さ繝ｼ繝峨・ window.THREE 縺ｮ縺ｾ縺ｾ蜍穂ｽ懶ｼ・-->
+  <script type="module">
+    import * as THREEMod from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    const THREE = Object.assign({}, THREEMod, { OrbitControls });
+    window.THREE = THREE;
+    window.__THREE_READY__ = true;
+    window.dispatchEvent(new Event('three-ready'));
+  </script>
+  <script>
+    (function () {
+      var runtime = window.LOGISTICS_RUNTIME_CONFIG || {};
+      var legacy = window.USER_CONFIG || {};
+      var key = runtime.googleMapsApiKey || legacy.googleMapsApiKey || '';
+      if (!key) return;
+      var s = document.createElement('script');
+      s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&v=weekly&loading=async';
+      s.async = true;
+      s.defer = true;
+      document.head.appendChild(s);
+    })();
+  </script>
+  <script type="module" src="./src/index3dMain.js"></script>
+</body>
+
+</html>
+
+
+

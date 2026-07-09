@@ -1,0 +1,23 @@
+{
+  "public": {
+    "googleMapsApiKey": "",
+    "yoloServerUrl": "",
+    "remoteVoxelServerUrl": "",
+    "defaultDriverSkill": 1.0,
+    "companyName": "",
+    "reporterName": ""
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "webPort": 8080,
+    "yoloPort": 8001,
+    "allowedOrigins": [],
+    "zips": {
+      "enabled": true,
+      "userId": "",
+      "password": "",
+      "serviceId": "50000001",
+      "deviceFlag": 1
+    }
+  }
+}

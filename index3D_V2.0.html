@@ -1,0 +1,561 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LOGISTICS OS 3Dシミュレータ V2.0</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="./index3D_V1.0.css" />
+  <style>
+    /* 項目5: 診断レイヤーのトグル＋色凡例（最小スタイル） */
+    .three-diag-block { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(148,163,184,0.25); }
+    .three-diag-title { font-size: 11px; font-weight: 600; opacity: 0.8; margin-bottom: 4px; }
+    .three-diag-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 10px; opacity: 0.85; }
+    .three-diag-legend .lg { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .three-diag-legend .lg i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+    .road-surface-ai { margin-top: 10px; display: grid; gap: 8px; }
+  </style>
+  <!-- THREEを単一インスタンス化し、PLATEAU 3D Tilesと共有する。 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.167.0/build/three.module.js",
+      "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.167.0/examples/jsm/controls/OrbitControls.js",
+      "three/examples/jsm/": "https://unpkg.com/three@0.167.0/examples/jsm/",
+      "three/addons/": "https://unpkg.com/three@0.167.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script>
+    window.TRUCK_DEFAULT_VIEW_MODE = '3d';
+    window.TRUCK_DEFAULT_PHOTOREALISTIC = false;
+    // 3Dシミュの地面は GSI seamlessphoto 航空写真に固定（規約クリーン・見た目は衛星のまま）。
+    // 社内検証で高解像度のGoogle公式衛星(Map Tiles API)を使いたい時だけ true に戻す。
+    // ズレ補正が要る場合は window.GROUND_IMAGERY_OFFSET_M = { east, north }（m）。
+    window.USE_GOOGLE_2D_TILES = false;
+    // 2D経路マップも既定はGSI航空写真。Google表示を検証する時だけ true にする。
+    window.USE_GOOGLE_2D_ROUTE_MAP = false;
+    // GSIの解像度が足りない場合は、契約済みの商用XYZ航空写真タイルをここか runtime-config.js に設定する。
+    // 例: window.SATELLITE_TILE_URL = 'https://.../{z}/{x}/{y}@2x.jpg?...';
+    //     window.SATELLITE_TILE_NAME = 'licensed-satellite';
+    //     window.SATELLITE_TILE_ATTRIBUTION = '© Provider';
+    //     window.SATELLITE_TILE_MAX_ZOOM = 20; window.SATELLITE_TILE_SIZE = 512;
+    // SV→YOLO 道路幅AI（実Street View画像の自動解析）は商用規約リスクのため無効化。
+    // 経路確定後の自動知覚も走らない。社内検証で使う時だけ true に戻す。
+    window.INDEX3D_AUTO_PERCEPTION = false;
+    window.INDEX3D_ENABLE_STREETVIEW_YOLO = false;
+    window.INDEX3D_ENABLE_GOOGLE_STREETVIEW = false;
+    // 道路/ワールド読込時に対応するPLATEAUを自動解決する。OSM押し出しも残し、
+    // タイル未取得時でも建物が消えないようにする。
+    window.PLATEAU_DISABLE = false;
+    window.PLATEAU_KEEP_OSM_BUILDINGS = true;
+    window.PLATEAU_AUTO_DISABLE = false;
+    window.PLATEAU_ALLOW_IMPLICIT_LOOKUP = false;
+    window.PLATEAU_PREFER_LOD = 'lod1';
+    window.PLATEAU_LOD_SCALE = 0.25;
+    window.PLATEAU_OPACITY = 0.45;
+    window.TRUCK_TRAIL_MODE = 'footprint';
+    window.TRUCK_TRAIL_RADIUS_M = 0.22;
+    window.TRUCK_TRAIL_HEIGHT_M = 0.28;
+    window.TRUCK_TRAIL_VOLUME_ALPHA = 0.1;
+    window.GROUND_TEXTURE_SATURATION = 1.0;
+    window.GROUND_TEXTURE_BRIGHTNESS = 1.0;
+    window.GROUND_TEXTURE_CONTRAST = 1.0;
+    window.GROUND_TEXTURE_BLUR_PX = 0;
+    window.GROUND_TEXTURE_TINT_ALPHA = 0;
+    window.BUILDING_FILL_OPACITY = 0.78;
+    window.BUILDING_ROOF_OPACITY = 0.72;
+    window.BUILDING_EDGE_OPACITY = 0.38;
+    window.ROAD_SURFACE_ALPHA = 0.28;
+    window.AUTODRIVE_OFFSET_RESPONSE_S = 1.35;
+    window.AUTODRIVE_OFFSET_MAX_RATE_MPS = 0.55;
+    // Renderer quality knobs (Three.js scene).
+    window.THREE3D_PIXEL_RATIO_MAX = 1.25;
+    window.THREE3D_ANTIALIAS = false;
+  </script>
+</head>
+
+<body class="index3d route-mode">
+  <main class="index3d-shell">
+    <section id="map3dWrap" class="index3d-view open" aria-hidden="false">
+      <div id="map3d"></div>
+      <section id="routeMapStage" class="route-map-stage" aria-label="経路作成マップ">
+        <header class="route-map-head">
+          <div>
+            <div class="eyebrow">経路マップ</div>
+            <h2 id="routeMapTitle">出発地と目的地を選択</h2>
+          </div>
+          <div class="route-map-status">
+            <span id="routeMapCaption">道路を読み込み、出発地と目的地をクリックしてください。</span>
+            <strong id="routeMapScope">道路: 表示範囲 / 3D: 経路周辺 250m</strong>
+          </div>
+        </header>
+        <div id="map"></div>
+      </section>
+      <aside id="map3dPanel" class="index3d-sim-panel">
+        <header class="panel-head">
+          <span>3Dシミュレーション</span>
+          <div class="button-row">
+            <button class="ctrl-btn ghost small" id="index3dPanelPlay" type="button">再生</button>
+            <button class="ctrl-btn ghost small" id="index3dPanelPause" type="button">一時停止</button>
+            <button class="ctrl-btn danger small" id="index3dPanelReset" type="button">リセット</button>
+          </div>
+        </header>
+        <div class="panel-body">
+          <div>速度: <span id="map3dSpeedStatus">0.0km/h</span></div>
+          <div>走行状態: <span id="map3dAutonomyStatus">待機中</span></div>
+          <div>接触: <span id="map3dCollisionCount">0</span></div>
+          <details class="sim-more">
+            <summary>詳細</summary>
+            <div>モデル: <span id="map3dModelStatus">自転車モデル</span></div>
+            <div id="tilesStatus">3D地面: 待機中</div>
+            <div>姿勢数: <span id="map3dPoseCount">0</span></div>
+            <div>舵角: <span id="map3dSteerStatus">0.0deg</span></div>
+            <div>センサー: <span id="map3dSensorStatus">-</span></div>
+          </details>
+        </div>
+      </aside>
+    </section>
+
+    <aside class="index3d-control">
+      <header class="app-head">
+        <div>
+          <div class="eyebrow">LOGISTICS OS</div>
+          <h1>3D搬入シミュレータ V2.0</h1>
+        </div>
+        <div class="status-pill" id="index3dStatus">起動中...</div>
+      </header>
+
+      <div class="rail-statusbar">
+        <div class="result-pill" id="resultPill" data-state="idle">
+          <span class="dot"></span><b id="resultPillText">経路を設定</b>
+        </div>
+        <button id="diagToggle" class="ctrl-btn ghost small" type="button" aria-pressed="false">詳細 ▾</button>
+      </div>
+
+      <section class="control-section route-builder-section">
+        <h2>経路</h2>
+        <div class="route-flow" aria-label="経路作成の進捗">
+          <div id="routeStepRoads" class="route-step active">
+            <b>1 道路</b>
+            <span id="routeRoadState">未読込</span>
+          </div>
+          <div id="routeStepPoints" class="route-step">
+            <b>2 地点</b>
+            <span id="routePointState">0/2</span>
+          </div>
+          <div id="routeStepConfirm" class="route-step">
+            <b>3 確定</b>
+            <span id="routeConfirmState">待機中</span>
+          </div>
+          <div id="routeStepWorld" class="route-step">
+            <b>4 3D</b>
+            <span id="routeWorldState">待機中</span>
+          </div>
+        </div>
+        <div class="route-next">
+          <div>
+            <strong id="routeGuideTitle">道路データを読み込む</strong>
+            <span id="routeGuideHint">まず現在表示している範囲の道路を読み込みます。</span>
+          </div>
+          <button id="routeGuidePrimary" class="ctrl-btn primary wide" type="button">1. 道路を読み込む</button>
+        </div>
+        <label class="field">
+          <span>場所検索</span>
+          <div class="inline-search">
+            <input id="search-input" class="ctrl-input" type="text" autocomplete="off" placeholder="住所・施設名で検索" />
+            <button id="search-button" class="ctrl-btn ghost" type="button">検索</button>
+          </div>
+        </label>
+        <label class="field">
+          <span>地番変換（ゼンリン）</span>
+          <div class="inline-search">
+            <input id="chibanInput" class="ctrl-input" type="text" autocomplete="off" placeholder="地番を入力（例: 東京都港区芝浦三丁目1番1号）" />
+            <button id="chibanButton" class="ctrl-btn ghost" type="button">変換</button>
+          </div>
+        </label>
+        <div id="chibanStatus" class="sub-status" style="white-space:pre-line;">地番を住所＋座標に変換し、その地点へ移動します（変換1回=2PV）。</div>
+        <div class="button-grid route-actions">
+          <button id="topRefreshData" class="ctrl-btn ghost" type="button">道路を更新</button>
+          <button id="toggleManualEndpointMode" class="ctrl-btn ghost toggle active" type="button">地点追加 ON</button>
+          <button id="confirm-route" class="ctrl-btn primary" type="button" disabled>この経路を確定</button>
+          <button id="reset-route" class="ctrl-btn ghost" type="button" disabled>リセット</button>
+          <button id="clear-endpoints" class="ctrl-btn ghost" type="button" disabled>地点をクリア</button>
+          <button id="index3dDemoRoute" class="ctrl-btn ghost" type="button">デモ経路</button>
+        </div>
+        <label class="check-row">
+          <input id="index3dAutoWorld" type="checkbox" checked />
+          <span>経路確定後に3Dワールドを自動読込</span>
+        </label>
+        <label class="check-row route-policy-row">
+          <input id="permitShortestRoute" type="checkbox" />
+          <span>一方通行を許可して最短経路を使う</span>
+        </label>
+        <div id="routePolicyStatus" class="sub-status">経路方針: 一方通行を守る</div>
+        <div id="status-message" class="sub-status">道路読込、地点追加、経路確定の順に進めてください。</div>
+        <div id="advancedMeta" class="sub-status">地点: 0 / 経路: 未確定</div>
+        <ul id="selected-roads-list" class="route-list"></ul>
+        <div id="routeCandidatesPanel" class="route-candidates"></div>
+        <button id="refresh-data" type="button" hidden></button>
+        <input id="autoSatYoloBeforeRoute" type="checkbox" hidden />
+      </section>
+
+      <section class="control-section world-section">
+        <h2>3Dワールド</h2>
+        <label class="field">
+          <span>地図表示</span>
+          <select id="mapDetailPreset" class="ctrl-input">
+            <option value="basic">基本</option>
+            <option value="standard" selected>標準</option>
+            <option value="debug">デバッグ</option>
+          </select>
+        </label>
+        <div class="split-fields">
+          <label class="field">
+            <span>読込半径</span>
+            <input id="index3dRadius" class="ctrl-input" type="number" min="80" max="500" step="10" value="250" />
+          </label>
+          <label class="field">
+            <span>道路データ</span>
+            <select id="roadDataSource" class="ctrl-input">
+              <option value="hybrid" selected>Hybrid</option>
+              <option value="osm">OSM</option>
+              <option value="gsi">GSI</option>
+            </select>
+          </label>
+        </div>
+        <div class="three-road-controls">
+          <label class="field road-alpha-field">
+            <span>道路面の濃さ <b id="roadSurfaceAlphaValue">0.28</b></span>
+            <input id="roadSurfaceAlpha" type="range" min="0.03" max="0.45" step="0.01" value="0.28" />
+          </label>
+          <details class="adv-layers">
+            <summary>詳細レイヤー</summary>
+          <div class="three-layer-grid" aria-label="3D道路レイヤー表示">
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="roadSurface" checked /><span>道路面</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="road" /><span>道路線</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="centerline" checked /><span>中心線</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="roadEdge" checked /><span>道路端</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="sidewalk" /><span>歩道</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="route" checked /><span>経路</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="onewayArrow" checked /><span>一方通行矢印</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="intersectionCap" /><span>交差点拡幅</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="building" checked /><span>建物</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="buildingFootprint" /><span>建物外形</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="sweptArea" checked /><span>車両通過範囲</span></label>
+            <label class="check-row"><input class="three-road-layer" type="checkbox" data-three-layer="truckTrail" checked /><span>トラック軌跡</span></label>
+          </div>
+          <div class="three-diag-block" aria-label="3D診断レイヤー">
+            <div class="three-diag-title">診断レイヤー</div>
+            <div class="three-layer-grid">
+              <label class="check-row"><input class="three-diag-layer" type="checkbox" data-three-diag="diagWidthSource" /><span>幅ソース色分け</span></label>
+              <label class="check-row"><input class="three-diag-layer" type="checkbox" data-three-diag="diagStop" /><span>停止地点</span></label>
+              <label class="check-row"><input class="three-diag-layer" type="checkbox" data-three-diag="diagSaturated" /><span>旋回半径不足</span></label>
+              <label class="check-row"><input class="three-diag-layer" type="checkbox" data-three-diag="diagOverhead" /><span>頭上クリアランス</span></label>
+              <label class="check-row"><input class="three-diag-layer" type="checkbox" data-three-diag="diagSvPoints" /><span>Street Viewスキャン地点</span></label>
+            </div>
+            <div class="three-diag-legend">
+              <span class="lg"><i style="background:#22d3ee"></i>手動上書き</span>
+              <span class="lg"><i style="background:#22c55e"></i>OSM幅</span>
+              <span class="lg"><i style="background:#f59e0b"></i>YOLO推定</span>
+              <span class="lg"><i style="background:#3b82f6"></i>GSI幅員ランク</span>
+              <span class="lg"><i style="background:#a855f7"></i>車線幅 / 旋回不足</span>
+              <span class="lg"><i style="background:#94a3b8"></i>道路種別推定</span>
+              <span class="lg"><i style="background:#ef4444"></i>停止 / 頭上危険</span>
+              <span class="lg"><i style="background:#06b6d4"></i>SV地点</span>
+            </div>
+          </div>
+          </details>
+          <label class="field road-alpha-field">
+            <span>PLATEAU高さ補正 <b id="plateauYOffsetValue">-3.5m</b></span>
+            <input id="plateauYOffset" type="range" min="-15" max="5" step="0.5" value="-3.5" />
+          </label>
+        </div>
+        <label class="field">
+          <span>PLATEAU建物URL</span>
+          <input id="plateauBuildingsUrl" class="ctrl-input" type="url" placeholder="任意のGeoJSON URL" />
+        </label>
+        <input id="plateauUrlInput" type="hidden" />
+        <button id="index3dLoadWorld" class="ctrl-btn primary wide" type="button">3Dワールドを読み込む</button>
+        <div id="buildingStatus" class="sub-status">建物: 未読込</div>
+      </section>
+
+      <section class="control-section appearance-section">
+        <h2>外観調整</h2>
+        <label class="field">
+          <span>建物 輪郭の濃さ <b id="bldgEdgeDarkVal">0.84</b></span>
+          <input id="bldgEdgeDark" type="range" min="0" max="1" step="0.02" value="0.84" />
+        </label>
+        <label class="field">
+          <span>建物 輪郭 不透明度 <b id="bldgEdgeOpacityVal">0.38</b></span>
+          <input id="bldgEdgeOpacity" type="range" min="0.1" max="1" step="0.05" value="0.38" />
+        </label>
+        <label class="field">
+          <span>建物 塗り 不透明度 <b id="bldgFillVal">0.78</b></span>
+          <input id="bldgFill" type="range" min="0.15" max="0.95" step="0.01" value="0.78" />
+        </label>
+        <label class="field">
+          <span>建物 屋根 不透明度 <b id="bldgRoofVal">0.72</b></span>
+          <input id="bldgRoof" type="range" min="0.05" max="0.95" step="0.01" value="0.72" />
+        </label>
+        <label class="field">
+          <span>道路面の濃さ <b id="appRoadAlphaVal">0.28</b></span>
+          <input id="appRoadAlpha" type="range" min="0.03" max="0.6" step="0.01" value="0.28" />
+        </label>
+        <label class="field">
+          <span>PLATEAU建物 不透明度 <b id="appPlateauOpacityVal">0.45</b></span>
+          <input id="appPlateauOpacity" type="range" min="0.15" max="1" step="0.01" value="0.45" />
+        </label>
+        <div class="three-diag-block">
+          <div class="three-diag-title">表示 / 非表示</div>
+          <div class="three-layer-grid">
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="building" checked /><span>建物</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="roadSurface" checked /><span>道路面</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="roadEdge" checked /><span>道路縁</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="centerline" checked /><span>中心線</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="route" checked /><span>経路</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="sweptArea" checked /><span>掃引</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="truckTrail" checked /><span>走行帯</span></label>
+            <label class="check-row"><input class="appvis" type="checkbox" data-vis="onewayArrow" checked /><span>一方通行</span></label>
+          </div>
+        </div>
+      </section>
+
+      <section class="control-section road-width-section">
+        <h2>道路幅</h2>
+        <div id="roadWidthSummary" class="sub-status">3Dワールド読込後、採用した道路幅とソースを表示します。</div>
+        <div class="road-width-editor" id="roadWidthEditor" hidden>
+          <div class="rw-selected">選択中: <b id="rwSelectedName">-</b> <span id="rwSelectedId" class="rw-id"></span></div>
+          <div class="rw-row">
+            <input id="roadWidthInput3d" class="ctrl-input" type="number" min="2" max="40" step="0.1" placeholder="幅 (m)" />
+            <button id="rwApply" class="ctrl-btn primary small" type="button">適用</button>
+            <button id="rwReset" class="ctrl-btn ghost small" type="button">解除</button>
+          </div>
+          <div class="rw-hint">適用した幅は3D道路面と接触判定にすぐ反映されます。</div>
+        </div>
+        <div class="road-surface-ai">
+          <div id="roadSegSurfaceSummary" class="sub-status">航空写真から道路面を推定し、手修正マスクのallowとして補強します。</div>
+          <div class="button-grid">
+            <button id="roadSegSurfaceApply" class="ctrl-btn ghost" type="button">航空写真で道路面補強</button>
+            <button id="roadSegSurfaceClear" class="ctrl-btn ghost" type="button">補強を解除</button>
+          </div>
+          <div class="rw-hint">road_segサーバーが起動中のときだけ実行できます。手修正したallow/denyは保持します。</div>
+        </div>
+        <div id="roadWidthList" class="road-width-list" aria-label="道路幅一覧"></div>
+      </section>
+
+      <section class="control-section solid-section">
+        <h2>建物・障害物</h2>
+        <div id="solidSummary" class="sub-status">3Dワールド読込後、建物・地上障害物・頭上クリアランスを表示します。</div>
+        <div class="solid-note">頭上障害物は車高と積載高さを合算して判定します。</div>
+        <div id="solidList" class="solid-list" aria-label="建物・障害物判定"></div>
+      </section>
+
+      <section class="control-section autonomy-section">
+        <h2>自律走行</h2>
+        <div id="autonomySummary" class="sub-status">3Dワールド読込後、前方センサー・速度制限・停止判定・旋回限界を表示します。</div>
+        <div id="autonomyList" class="autonomy-list" aria-label="自律走行イベント"></div>
+      </section>
+
+      <section class="control-section perception-section">
+        <h2>Street View / YOLOスキャン</h2>
+        <div id="perceptionSummary" class="sub-status">Street View / YOLOで道路幅候補と障害物proxyを生成します。</div>
+        <div class="button-grid">
+          <button id="perceptionRun" class="ctrl-btn primary" type="button">SV/YOLOを実行</button>
+          <button id="perceptionRealRun" class="ctrl-btn ghost" type="button" hidden>検証スキャン</button>
+          <button id="perceptionClear" class="ctrl-btn ghost" type="button">スキャン結果をクリア</button>
+        </div>
+        <div class="perception-note">実際に取得できたStreet View / YOLO検出だけを反映します。サーバーやAPIキーが無い場合、障害物proxyは追加されません。</div>
+        <div id="perceptionList" class="perception-list" aria-label="知覚候補と障害物"></div>
+      </section>
+
+      <section class="control-section truck-section">
+        <h2>トラック</h2>
+        <label class="field">
+          <span>車両</span>
+          <select id="vehiclePreset" class="ctrl-input"></select>
+        </label>
+        <label class="field">
+          <span>速度 <b id="index3dSpeedValue">18km/h</b></span>
+          <input id="index3dSpeed" type="range" min="4" max="35" value="18" step="1" />
+        </label>
+        <label class="field">
+          <span>シミュレーション速度 <b id="playbackSpeedValue">x1.00</b></span>
+          <input id="playbackSpeed" type="range" min="0.25" max="4.0" step="0.25" value="1.0" />
+        </label>
+        <label class="field">
+          <span>積載</span>
+          <select id="index3dCargoLoad" class="ctrl-input">
+            <option value="none">なし</option>
+            <option value="wood">木材</option>
+          </select>
+        </label>
+        <div class="split-fields cargo-fields">
+          <label class="field">
+            <span>木材長 (m)</span>
+            <input id="index3dCargoLength" class="ctrl-input" type="number" min="0.5" max="12" value="6.0" step="0.1" />
+          </label>
+          <label class="field">
+            <span>本数</span>
+            <input id="index3dCargoCount" class="ctrl-input" type="number" min="1" max="24" value="1" step="1" />
+          </label>
+          <label class="field">
+            <span>束幅 (mm)</span>
+            <input id="index3dCargoWidth" class="ctrl-input" type="number" min="100" max="2500" value="1000" step="50" />
+          </label>
+          <label class="field">
+            <span>積み方</span>
+            <select id="index3dCargoPlacement" class="ctrl-input">
+              <option value="center">平置き（中央）</option>
+              <option value="left">平置き（左寄せ）</option>
+              <option value="right">平置き（右寄せ）</option>
+              <option value="head_out">頭出し</option>
+              <option value="diagonal">斜め掛け</option>
+            </select>
+          </label>
+        </div>
+        <div class="button-grid">
+          <button id="index3dRun" class="ctrl-btn primary" type="button">実行</button>
+          <button id="index3dPause" class="ctrl-btn ghost" type="button">一時停止</button>
+          <button id="index3dReset" class="ctrl-btn ghost" type="button">リセット</button>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <div><span>距離</span><strong id="metricDistance">-</strong></div>
+        <div><span>経路点</span><strong id="metricRoutePoints">0</strong></div>
+        <div><span>AOI</span><strong id="metricAoi">-</strong></div>
+        <div><span>道路</span><strong id="metricRoads">0</strong></div>
+        <div><span>建物</span><strong id="metricBuildings">0</strong></div>
+        <div><span>接触</span><strong id="metricContacts">0</strong></div>
+      </section>
+
+      <section class="control-section log-section">
+        <h2>ログ</h2>
+        <div id="index3dLog"></div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="svViewport" hidden>
+    <div id="svPano"></div>
+  </div>
+  <div id="toast"></div>
+
+
+  <!-- ライセンス表示。PLATEAU / OpenStreetMap / Google Maps / GSI の出典を常時確認できるようにする。 -->
+  <button id="attributionToggle" type="button" class="attribution-toggle"
+          aria-haspopup="dialog" aria-controls="attributionModal"
+          title="ライセンス / 出典">
+    (c) 地図データ
+  </button>
+  <div id="attributionModal" class="attribution-modal" role="dialog" aria-modal="true"
+       aria-labelledby="attributionModalTitle" hidden>
+    <div class="attribution-modal-backdrop" data-attribution-close></div>
+    <div class="attribution-modal-panel" role="document">
+      <header class="attribution-modal-head">
+        <h2 id="attributionModalTitle">ライセンス / 出典</h2>
+        <button type="button" class="attribution-modal-close" data-attribution-close aria-label="閉じる">x</button>
+      </header>
+      <div class="attribution-modal-body">
+        <section>
+          <h3>建物3Dデータ（PLATEAU）</h3>
+          <p>3D都市モデルは国土交通省 Project PLATEAU の3D Tilesを使用しています。</p>
+          <p><small>出典: 国土交通省 Project PLATEAU /
+            <a href="https://www.mlit.go.jp/plateau/" target="_blank" rel="noopener noreferrer">mlit.go.jp/plateau/</a></small></p>
+        </section>
+        <section>
+          <h3>道路・地物データ（OpenStreetMap）</h3>
+          <p>道路形状とタグはOpenStreetMap contributorsのデータを使用しています。</p>
+          <p><small>(c) OpenStreetMap contributors -
+            <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">openstreetmap.org/copyright</a></small></p>
+        </section>
+        <section>
+          <h3>地図タイル・航空写真（GSI）</h3>
+          <p>2D地図と3D地面の航空写真は、既定で国土地理院の地理院タイルを使用します。</p>
+          <p><small>出典: 国土地理院 地理院タイル /
+            <a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener noreferrer">地理院タイル一覧</a></small></p>
+        </section>
+        <section>
+          <h3>Street View / Google Maps Platform</h3>
+          <p>Google Maps Platformは、明示的に有効化した場合のGoogle地図表示、場所検索、Street View表示に使用します。</p>
+          <p><small>地図データ (c) Google /
+            <a href="https://cloud.google.com/maps-platform/terms" target="_blank" rel="noopener noreferrer">Google Maps Platform Terms</a></small></p>
+        </section>
+        <section>
+          <h3>標高・逆ジオコーディング（GSI）</h3>
+          <p>逆ジオコーダーなど一部の地理情報は国土地理院のデータを使用します。</p>
+          <p><small>出典: 国土地理院 /
+            <a href="https://www.gsi.go.jp/" target="_blank" rel="noopener noreferrer">gsi.go.jp</a></small></p>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var btn = document.getElementById('attributionToggle');
+      var modal = document.getElementById('attributionModal');
+      if (!btn || !modal) return;
+      function open() {
+        modal.hidden = false;
+        modal.classList.add('open');
+      }
+      function close() {
+        modal.hidden = true;
+        modal.classList.remove('open');
+      }
+      btn.addEventListener('click', open);
+      modal.querySelectorAll('[data-attribution-close]').forEach(function (el) {
+        el.addEventListener('click', close);
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !modal.hidden) close();
+      });
+    })();
+  </script>
+
+  <script src="runtime-config.js"></script>
+  <script src="user_config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/polygon-clipping@0.15.3/dist/polygon-clipping.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
+  <!-- THREEをES modulesで読み込み、既存コード向けにwindow.THREEへ公開する。 -->
+  <script type="module">
+    import * as THREEMod from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    const THREE = Object.assign({}, THREEMod, { OrbitControls });
+    window.THREE = THREE;
+    window.__THREE_READY__ = true;
+    window.dispatchEvent(new Event('three-ready'));
+  </script>
+  <script>
+    (function () {
+      var runtime = window.LOGISTICS_RUNTIME_CONFIG || {};
+      var legacy = window.USER_CONFIG || {};
+      var key = runtime.googleMapsApiKey || legacy.googleMapsApiKey || '';
+      if (!key) return;
+      var s = document.createElement('script');
+      s.src = 'https://maps.googleapis.com/maps/api/js?key=' + key + '&v=weekly&loading=async';
+      s.async = true;
+      s.defer = true;
+      document.head.appendChild(s);
+    })();
+  </script>
+  <script type="module" src="./src/index3dMain.js"></script>
+</body>
+
+</html>
+
+
+
+

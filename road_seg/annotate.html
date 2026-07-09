@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>道路面ラベル作成 - road_seg</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #0f1720;
+    --panel: #18222e;
+    --panel2: #111a24;
+    --line: #2a3a4a;
+    --fg: #e6edf3;
+    --muted: #a8b3bf;
+    --accent: #2f81f7;
+    --ok: #2ea043;
+    --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Segoe UI", Meiryo, sans-serif; background: var(--bg); color: var(--fg); }
+  #app { display: flex; height: 100%; min-width: 980px; }
+  #left { flex: 1; position: relative; min-width: 480px; }
+  #map { position: absolute; inset: 0; }
+  #bar {
+    position: absolute;
+    z-index: 1000;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: rgba(24, 34, 46, .94);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    flex-wrap: wrap;
+  }
+  button, select, input[type="range"] {
+    font: inherit;
+  }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: #22303f;
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { border-color: #7f1d1d; color: #fecaca; }
+  button:disabled { opacity: .55; cursor: wait; }
+  select {
+    background: #22303f;
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 5px;
+  }
+  .hint { font-size: 12px; color: var(--muted); }
+  .stat { margin-left: auto; display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); }
+  .stat b { color: var(--fg); }
+  #editor {
+    width: min(58vw, 920px);
+    max-width: 920px;
+    min-width: 520px;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+  }
+  #editor.collapsed { width: 0; min-width: 0; overflow: hidden; border-left: 0; }
+  #editorHead {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #editorHead .tool.active { outline: 2px solid var(--accent); }
+  #canvasWrap {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 12px;
+    background: var(--panel2);
+  }
+  #stage { position: relative; line-height: 0; box-shadow: 0 0 0 1px var(--line); max-width: none; flex: 0 0 auto; }
+  #stage canvas { display: block; max-width: none; width: 100%; height: 100%; }
+  #guideCanvas { position: absolute; inset: 0; pointer-events: none; }
+  #maskCanvas { position: absolute; inset: 0; opacity: .45; cursor: crosshair; touch-action: none; }
+  #widthM { width: 72px; background: #22303f; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px; }
+  #empty {
+    margin: 20px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  #toast {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0b2a12;
+    border: 1px solid #1f7a34;
+    color: #c7f0d0;
+    padding: 8px 14px;
+    border-radius: 8px;
+    z-index: 2000;
+    display: none;
+    max-width: 80vw;
+  }
+  .warn { color: #f2cc60; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="map"></div>
+    <div id="bar">
+      <button id="fetchBtn" class="primary">この範囲を取得</button>
+      <label class="hint">初期下書き
+        <select id="initMask">
+          <option value="rdcl" selected>国土地理院 RDCL幅ランク</option>
+          <option value="pretrained">学習済みモデル</option>
+          <option value="threshold">色しきい値</option>
+          <option value="blank">空から手描き</option>
+        </select>
+      </label>
+      <label class="hint">ズーム
+        <select id="zoom">
+          <option value="18" selected>18 高精細</option>
+          <option value="17">17 広め</option>
+        </select>
+      </label>
+      <span class="hint">国土地理院の航空写真と道路中心線を下書きに使います。</span>
+      <span class="stat">
+        <span>手動 <b id="manualCount">-</b></span>
+        <span>弱教師 <b id="weakCount">-</b></span>
+        <span>モデル <b id="modelState">-</b></span>
+      </span>
+    </div>
+  </div>
+
+  <div id="editor" class="collapsed">
+    <div id="editorHead">
+      <button id="toolPaint" class="tool active">道路面を塗る</button>
+      <button id="toolErase" class="tool">消す</button>
+      <button id="toolLine" class="tool">直線</button>
+      <button id="toolWidth" class="tool">幅編集</button>
+      <label class="hint">ブラシ <input id="brush" type="range" min="4" max="96" value="24"><span id="brushM"></span></label>
+      <label class="hint">道幅 <input id="widthM" type="number" min="1.5" max="30" step="0.1" value="4.0">m</label>
+      <button id="applyWidthBtn">幅を適用</button>
+      <button id="zoomOutBtn">縮小</button>
+      <button id="zoomResetBtn">100%</button>
+      <button id="zoomInBtn">拡大</button>
+      <span class="hint" id="editZoomLabel">100%</span>
+      <button id="resetBtn">下書きに戻す</button>
+      <button id="saveBtn" class="primary">保存して教師データ化</button>
+      <button id="closeBtn">閉じる</button>
+      <span class="hint" id="meta">未取得</span>
+    </div>
+    <div id="canvasWrap">
+      <div id="empty">左の地図で対象範囲まで移動し、「この範囲を取得」を押してください。緑が道路面ラベルです。現地の走行面に合わせて塗る、消すを使って直します。</div>
+      <div id="stage" style="display:none">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="guideCanvas"></canvas>
+        <canvas id="maskCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API = location.origin;
+let state = {
+  id: null,
+  width: 0,
+  height: 0,
+  zoom: 18,
+  bbox: null,
+  mPerPx: 0,
+  tool: 'paint',
+  painting: false,
+  lineStart: null,
+  previewPoint: null,
+  initialMaskUrl: null,
+  initMask: 'rdcl',
+  centerlines: [],
+  selectedLineIndex: -1,
+  editorScale: 1,
+  roadWidthEdits: [],
+};
+
+const map = L.map('map', { center: [35.681236, 139.767125], zoom: 17 });
+L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+  maxZoom: 19,
+  maxNativeZoom: 18,
+  attribution: '国土地理院 シームレス空中写真',
+}).addTo(map);
+
+const imgCanvas = document.getElementById('imgCanvas');
+const guideCanvas = document.getElementById('guideCanvas');
+const maskCanvas = document.getElementById('maskCanvas');
+const imgCtx = imgCanvas.getContext('2d');
+const guideCtx = guideCanvas.getContext('2d');
+const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+const brush = document.getElementById('brush');
+const widthMInput = document.getElementById('widthM');
+
+function metersPerPixel(lat, zoom) {
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+}
+
+function toast(message, warn = false) {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.style.display = 'block';
+  el.style.background = warn ? '#332200' : '#0b2a12';
+  el.style.borderColor = warn ? '#8f6500' : '#1f7a34';
+  setTimeout(() => { el.style.display = 'none'; }, 2800);
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function setEditorScale(scale) {
+  state.editorScale = clamp(scale, 0.5, 8);
+  const stage = document.getElementById('stage');
+  if (state.width && state.height) {
+    stage.style.width = `${Math.round(state.width * state.editorScale)}px`;
+    stage.style.height = `${Math.round(state.height * state.editorScale)}px`;
+  }
+  document.getElementById('editZoomLabel').textContent = `${Math.round(state.editorScale * 100)}%`;
+}
+
+function drawPolyline(ctx, points, widthPx, composite = 'source-over', color = 'rgba(0,255,0,1)') {
+  if (!Array.isArray(points) || points.length < 2) return;
+  ctx.save();
+  ctx.globalCompositeOperation = composite;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1, widthPx);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) ctx.lineTo(points[i].x, points[i].y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function roadPoints(line) {
+  return (line?.pixels || []).map((p) => ({ x: Number(p[0]), y: Number(p[1]) }))
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+}
+
+function drawGuides() {
+  if (!state.width || !state.height) return;
+  guideCtx.clearRect(0, 0, state.width, state.height);
+  for (let i = 0; i < state.centerlines.length; i += 1) {
+    const pts = roadPoints(state.centerlines[i]);
+    if (pts.length < 2) continue;
+    guideCtx.save();
+    guideCtx.strokeStyle = i === state.selectedLineIndex ? 'rgba(255,215,0,.95)' : 'rgba(0,180,255,.65)';
+    guideCtx.lineWidth = i === state.selectedLineIndex ? 3 : 1.5;
+    guideCtx.setLineDash(i === state.selectedLineIndex ? [] : [7, 5]);
+    guideCtx.beginPath();
+    guideCtx.moveTo(pts[0].x, pts[0].y);
+    for (let j = 1; j < pts.length; j += 1) guideCtx.lineTo(pts[j].x, pts[j].y);
+    guideCtx.stroke();
+    guideCtx.restore();
+  }
+  if (state.tool === 'line' && state.lineStart && state.previewPoint) {
+    drawPolyline(guideCtx, [state.lineStart, state.previewPoint], parseInt(brush.value, 10), 'source-over', 'rgba(255,255,255,.9)');
+  }
+}
+
+function distToSegment(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (!len2) return Math.hypot(p.x - a.x, p.y - a.y);
+  const t = clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / len2, 0, 1);
+  const x = a.x + t * dx;
+  const y = a.y + t * dy;
+  return Math.hypot(p.x - x, p.y - y);
+}
+
+function nearestCenterline(point) {
+  let best = { index: -1, dist: Infinity };
+  for (let i = 0; i < state.centerlines.length; i += 1) {
+    const pts = roadPoints(state.centerlines[i]);
+    for (let j = 0; j < pts.length - 1; j += 1) {
+      const d = distToSegment(point, pts[j], pts[j + 1]);
+      if (d < best.dist) best = { index: i, dist: d };
+    }
+  }
+  return best;
+}
+
+async function refreshStats() {
+  try {
+    const res = await fetch(`${API}/annotate/stats`);
+    const data = await res.json();
+    document.getElementById('manualCount').textContent = data.manualSamples ?? data.count ?? 0;
+    document.getElementById('weakCount').textContent = data.weakTiles ?? 0;
+    const meta = data.modelMeta || {};
+    document.getElementById('modelState').textContent = data.modelExists
+      ? `あり val=${Number(meta.valLoss ?? 0).toFixed(3)}`
+      : 'なし';
+  } catch (_err) {
+    document.getElementById('modelState').textContent = '確認不可';
+  }
+}
+refreshStats();
+
+document.getElementById('fetchBtn').addEventListener('click', async () => {
+  const bounds = map.getBounds();
+  const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
+  const zoom = parseInt(document.getElementById('zoom').value, 10);
+  const initMask = document.getElementById('initMask').value;
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+  try {
+    const res = await fetch(`${API}/annotate/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox, zoom, initMask }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    openEditor(await res.json());
+  } catch (err) {
+    toast(`取得失敗: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'この範囲を取得';
+  }
+});
+
+function openEditor(data) {
+  state.id = data.id;
+  state.width = data.width;
+  state.height = data.height;
+  state.zoom = data.zoom;
+  state.bbox = data.bbox;
+  state.initMask = data.initMask;
+  state.initialMaskUrl = data.mask;
+  state.centerlines = Array.isArray(data.centerlines) ? data.centerlines : [];
+  state.selectedLineIndex = -1;
+  state.lineStart = null;
+  state.previewPoint = null;
+  state.roadWidthEdits = [];
+  state.mPerPx = metersPerPixel((data.bbox[1] + data.bbox[3]) / 2, data.zoom);
+  [imgCanvas, guideCanvas, maskCanvas].forEach((canvas) => {
+    canvas.width = data.width;
+    canvas.height = data.height;
+  });
+  document.getElementById('meta').textContent =
+    `${data.width}x${data.height}px z${data.zoom} ${state.mPerPx.toFixed(2)}m/px 下書き=${data.initMask}`;
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('stage').style.display = 'block';
+  document.getElementById('editor').classList.remove('collapsed');
+  setEditorScale(1);
+
+  const img = new Image();
+  img.onload = () => imgCtx.drawImage(img, 0, 0);
+  img.src = data.image;
+  loadMaskGreen(data.mask);
+  updateBrushLabel();
+  drawGuides();
+  if (data.missingTiles) {
+    toast(`航空写真タイル欠落: ${data.missingTiles}枚。黒い領域は避けてください。`, true);
+  }
+}
+
+function loadMaskGreen(url) {
+  const img = new Image();
+  img.onload = () => {
+    const tmp = document.createElement('canvas');
+    tmp.width = state.width;
+    tmp.height = state.height;
+    const ctx = tmp.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, state.width, state.height);
+    const data = ctx.getImageData(0, 0, state.width, state.height);
+    const pix = data.data;
+    for (let i = 0; i < pix.length; i += 4) {
+      const road = pix[i] >= 128;
+      pix[i] = 0;
+      pix[i + 1] = 255;
+      pix[i + 2] = 0;
+      pix[i + 3] = road ? 255 : 0;
+    }
+    maskCtx.putImageData(data, 0, 0);
+    drawGuides();
+  };
+  img.src = url;
+}
+
+function setTool(tool) {
+  state.tool = tool;
+  state.lineStart = null;
+  state.previewPoint = null;
+  document.getElementById('toolPaint').classList.toggle('active', tool === 'paint');
+  document.getElementById('toolErase').classList.toggle('active', tool === 'erase');
+  document.getElementById('toolLine').classList.toggle('active', tool === 'line');
+  document.getElementById('toolWidth').classList.toggle('active', tool === 'width');
+  drawGuides();
+}
+document.getElementById('toolPaint').addEventListener('click', () => setTool('paint'));
+document.getElementById('toolErase').addEventListener('click', () => setTool('erase'));
+document.getElementById('toolLine').addEventListener('click', () => setTool('line'));
+document.getElementById('toolWidth').addEventListener('click', () => setTool('width'));
+document.getElementById('zoomOutBtn').addEventListener('click', () => setEditorScale(state.editorScale / 1.25));
+document.getElementById('zoomResetBtn').addEventListener('click', () => setEditorScale(1));
+document.getElementById('zoomInBtn').addEventListener('click', () => setEditorScale(state.editorScale * 1.25));
+document.getElementById('canvasWrap').addEventListener('wheel', (ev) => {
+  if (!ev.ctrlKey) return;
+  ev.preventDefault();
+  setEditorScale(state.editorScale * (ev.deltaY < 0 ? 1.12 : 1 / 1.12));
+}, { passive: false });
+
+function updateBrushLabel() {
+  const px = parseInt(brush.value, 10);
+  const label = state.mPerPx ? `${(px * state.mPerPx).toFixed(1)}m` : `${px}px`;
+  document.getElementById('brushM').textContent = ` ${label}`;
+}
+brush.addEventListener('input', updateBrushLabel);
+
+function canvasPos(ev) {
+  const rect = maskCanvas.getBoundingClientRect();
+  const sx = maskCanvas.width / rect.width;
+  const sy = maskCanvas.height / rect.height;
+  return { x: (ev.clientX - rect.left) * sx, y: (ev.clientY - rect.top) * sy };
+}
+
+function dab(x, y) {
+  const radius = parseInt(brush.value, 10) / 2;
+  if (state.tool === 'erase') {
+    maskCtx.globalCompositeOperation = 'destination-out';
+    maskCtx.fillStyle = 'rgba(0,0,0,1)';
+  } else {
+    maskCtx.globalCompositeOperation = 'source-over';
+    maskCtx.fillStyle = 'rgba(0,255,0,1)';
+  }
+  maskCtx.beginPath();
+  maskCtx.arc(x, y, radius, 0, Math.PI * 2);
+  maskCtx.fill();
+  maskCtx.globalCompositeOperation = 'source-over';
+}
+
+function selectCenterlineAt(point) {
+  const nearest = nearestCenterline(point);
+  const tolerancePx = Math.max(10, 12 / Math.max(0.5, state.editorScale));
+  if (nearest.index < 0 || nearest.dist > tolerancePx) {
+    state.selectedLineIndex = -1;
+    drawGuides();
+    toast('近くの既存道路が見つかりません。中心線の近くをクリックしてください。', true);
+    return false;
+  }
+  state.selectedLineIndex = nearest.index;
+  const line = state.centerlines[nearest.index];
+  widthMInput.value = Number(line.fullWidthM || 4).toFixed(1);
+  drawGuides();
+  toast(`既存道路を選択: 幅 ${Number(line.fullWidthM || 4).toFixed(1)}m`);
+  return true;
+}
+
+function applySelectedRoadWidth() {
+  const line = state.centerlines[state.selectedLineIndex];
+  if (!line) {
+    toast('幅編集する既存道路をクリックして選択してください。', true);
+    return;
+  }
+  const newWidthM = Number(widthMInput.value);
+  if (!Number.isFinite(newWidthM) || newWidthM <= 0) {
+    toast('道幅mを正しく入力してください。', true);
+    return;
+  }
+  const pts = roadPoints(line);
+  if (pts.length < 2 || !state.mPerPx) return;
+  const oldWidthM = Number(line.fullWidthM || 4);
+  const erasePx = (Math.max(oldWidthM, newWidthM) + 2.0) / state.mPerPx;
+  const drawPx = newWidthM / state.mPerPx;
+  drawPolyline(maskCtx, pts, erasePx, 'destination-out', 'rgba(0,0,0,1)');
+  drawPolyline(maskCtx, pts, drawPx, 'source-over', 'rgba(0,255,0,1)');
+  line.fullWidthM = newWidthM;
+  state.roadWidthEdits.push({
+    id: line.id,
+    oldWidthM,
+    newWidthM,
+    rank: line.rank ?? null,
+  });
+  drawGuides();
+  toast(`道幅を ${newWidthM.toFixed(1)}m に更新しました。`);
+}
+
+document.getElementById('applyWidthBtn').addEventListener('click', applySelectedRoadWidth);
+
+let last = null;
+maskCanvas.addEventListener('pointerdown', (ev) => {
+  maskCanvas.setPointerCapture(ev.pointerId);
+  const pos = canvasPos(ev);
+  if (state.tool === 'width') {
+    selectCenterlineAt(pos);
+    return;
+  }
+  if (state.tool === 'line') {
+    state.painting = true;
+    state.lineStart = pos;
+    state.previewPoint = pos;
+    last = pos;
+    drawGuides();
+    return;
+  }
+  state.painting = true;
+  last = pos;
+  dab(pos.x, pos.y);
+});
+maskCanvas.addEventListener('pointermove', (ev) => {
+  if (!state.painting || !last) return;
+  const pos = canvasPos(ev);
+  if (state.tool === 'line') {
+    state.previewPoint = pos;
+    drawGuides();
+    return;
+  }
+  const dx = pos.x - last.x;
+  const dy = pos.y - last.y;
+  const dist = Math.hypot(dx, dy);
+  const step = Math.max(2, parseInt(brush.value, 10) / 3);
+  for (let d = 0; d < dist; d += step) {
+    dab(last.x + dx * d / dist, last.y + dy * d / dist);
+  }
+  dab(pos.x, pos.y);
+  last = pos;
+});
+window.addEventListener('pointerup', (ev) => {
+  if (state.painting && state.tool === 'line' && state.lineStart) {
+    const pos = canvasPos(ev);
+    drawPolyline(maskCtx, [state.lineStart, pos], parseInt(brush.value, 10), 'source-over', 'rgba(0,255,0,1)');
+    state.lineStart = null;
+    state.previewPoint = null;
+    drawGuides();
+  }
+  state.painting = false;
+  last = null;
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  if (state.initialMaskUrl) {
+    state.roadWidthEdits = [];
+    state.selectedLineIndex = -1;
+    loadMaskGreen(state.initialMaskUrl);
+  }
+});
+document.getElementById('closeBtn').addEventListener('click', () => {
+  document.getElementById('editor').classList.add('collapsed');
+});
+
+function exportMaskPng() {
+  const data = maskCtx.getImageData(0, 0, state.width, state.height);
+  const out = document.createElement('canvas');
+  out.width = state.width;
+  out.height = state.height;
+  const ctx = out.getContext('2d');
+  const encoded = ctx.createImageData(state.width, state.height);
+  const src = data.data;
+  const dst = encoded.data;
+  for (let i = 0; i < src.length; i += 4) {
+    const v = src[i + 3] >= 128 ? 255 : 0;
+    dst[i] = v;
+    dst[i + 1] = v;
+    dst[i + 2] = v;
+    dst[i + 3] = 255;
+  }
+  ctx.putImageData(encoded, 0, 0);
+  return out.toDataURL('image/png');
+}
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  if (!state.id) {
+    toast('先に範囲を取得してください。', true);
+    return;
+  }
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const res = await fetch(`${API}/annotate/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: state.id,
+        maskPng: exportMaskPng(),
+        meta: {
+          source: 'manual_corrected_surface',
+          bbox: state.bbox,
+          zoom: state.zoom,
+          mPerPx: state.mPerPx,
+          initMask: state.initMask,
+          roadWidthEdits: state.roadWidthEdits,
+          savedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    toast(`保存しました。手動教師データ ${data.count} 件`);
+    state.id = null;
+    document.getElementById('editor').classList.add('collapsed');
+    await refreshStats();
+  } catch (err) {
+    toast(`保存失敗: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存して教師データ化';
+  }
+});
+</script>
+</body>
+</html>

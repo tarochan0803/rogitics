@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Java Truck Simulator 2D (HTML5 Port) - Real Physics</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #222;
+            color: #fff;
+            font-family: sans-serif;
+            flex-direction: column;
+        }
+
+        canvas {
+            background-color: #404040;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.8);
+            margin-bottom: 10px;
+            cursor: crosshair;
+        }
+
+        .controls {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 10px;
+            align-items: center;
+            background: #333;
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+
+        .instructions {
+            text-align: center;
+            font-size: 14px;
+            color: #ccc;
+            max-width: 800px;
+        }
+
+        label {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        button {
+            padding: 6px 16px;
+            cursor: pointer;
+            background: #ff5555;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+
+        button:hover {
+            background: #ff3333;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="controls">
+        <label>
+            <input type="radio" name="mode" value="manual" checked> 直感操作（十字キー）
+        </label>
+        <label>
+            <input type="radio" name="mode" value="waypoint"> 端点操作（実車挙動・カーブ自動減速）
+        </label>
+        <label>
+            <input type="radio" name="mode" value="draw_course"> 道を描く（ドラッグ）
+        </label>
+        <button id="clearTrajectory">軌跡クリア</button>
+        <button id="generateCourseBtn" style="background: #20b2aa;">ランダムコース生成</button>
+        <button id="autoRunBtn" style="background: #e67e22;">コースを自動走行</button>
+    </div>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <div class="instructions">
+        <p id="modeDesc">操作方法: 矢印キー（↑: アクセル, ↓: ブレーキ/バック, ←: ハンドル左, →: ハンドル右）※実車同様、ハンドルを切らないと曲がりません。</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const radios = document.querySelectorAll('input[name="mode"]');
+        const modeDesc = document.getElementById('modeDesc');
+        const clearBtn = document.getElementById('clearTrajectory');
+        const calcCourseBtn = document.getElementById('generateCourseBtn');
+        const autoRunBtn = document.getElementById('autoRunBtn');
+
+        let currentMode = 'manual';
+        let currentCourse = [];
+
+        // ランダムコース作成
+        function generateRandomCourse() {
+            currentCourse = [];
+            const type = Math.floor(Math.random() * 5); // 5種類のコース
+
+            if (type === 0) { // クランク（直角2回）
+                currentCourse = [
+                    { x: 100, y: 500 },
+                    { x: 100, y: 250 },
+                    { x: 600, y: 250 },
+                    { x: 600, y: 100 },
+                    { x: 750, y: 100 }
+                ];
+            } else if (type === 1) { // S字カーブ
+                for (let i = 0; i <= 30; i++) {
+                    let t = i / 30;
+                    currentCourse.push({
+                        x: 100 + t * 600,
+                        y: 300 + Math.sin(t * Math.PI * 2) * 200
+                    });
+                }
+            } else if (type === 2) { // ヘアピン（Uターン）
+                currentCourse.push({ x: 700, y: 150 });
+                currentCourse.push({ x: 300, y: 150 });
+                for (let i = 0; i <= 20; i++) {
+                    let angle = -Math.PI / 2 - (i / 20) * Math.PI;
+                    currentCourse.push({
+                        x: 300 + Math.cos(angle) * 150,
+                        y: 300 + Math.sin(angle) * 150
+                    });
+                }
+                currentCourse.push({ x: 300, y: 450 });
+                currentCourse.push({ x: 700, y: 450 });
+            } else if (type === 3) { // スラローム
+                for (let i = 0; i <= 40; i++) {
+                    let t = i / 40;
+                    currentCourse.push({
+                        x: 100 + t * 650,
+                        y: 300 + Math.sin(t * Math.PI * 4) * 120
+                    });
+                }
+            } else { // 大きなオーバル（周回路）
+                for (let i = 0; i <= 40; i++) {
+                    let angle = (i / 40) * Math.PI * 2;
+                    currentCourse.push({
+                        x: 400 - Math.cos(angle) * 250,
+                        y: 300 - Math.sin(angle) * 150
+                    });
+                }
+            }
+
+            // トラックと軌跡のリセット
+            if (currentCourse.length > 0) {
+                truck.x = currentCourse[0].x;
+                truck.y = currentCourse[0].y;
+                if (currentCourse.length > 1) {
+                    truck.angle = Math.atan2(currentCourse[1].y - currentCourse[0].y, currentCourse[1].x - currentCourse[0].x);
+                }
+                truck.speed = 0;
+                truck.steeringAngle = 0;
+                trajectory.length = 0;
+                waypoints.length = 0;
+                lastWaypoint = null;
+            }
+        }
+
+        calcCourseBtn.addEventListener('click', generateRandomCourse);
+
+        // 生成されたコースに沿って自動走行させる
+        autoRunBtn.addEventListener('click', () => {
+            if (currentCourse.length > 1) {
+                // コースの中心点（2点目以降）を通過点としてセット
+                waypoints.length = 0;
+                for (let i = 1; i < currentCourse.length; i++) {
+                    waypoints.push({ x: currentCourse[i].x, y: currentCourse[i].y });
+                }
+
+                // スタート地点を記録
+                lastWaypoint = { x: currentCourse[0].x, y: currentCourse[0].y };
+
+                // 端点操作（自動走行）モードに切り替え
+                currentMode = 'waypoint';
+                document.querySelector('input[value="waypoint"]').checked = true;
+                modeDesc.textContent = '操作方法: クリックで端点を追加。実車のハンドリング挙動(Bicycle Model)と、前方のカーブ曲率に応じた自動減速を行います。';
+            }
+        });
+
+        // 状態切り替え
+        radios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                currentMode = e.target.value;
+                if (currentMode === 'manual') {
+                    modeDesc.textContent = '操作方法: 矢印キー（↑: アクセル, ↓: ブレーキ/バック, ←: ハンドル左, →: ハンドル右）※実車同様のステアリング操作';
+                } else if (currentMode === 'waypoint') {
+                    modeDesc.textContent = '操作方法: クリックで端点を追加。実車のハンドリング挙動(Bicycle Model)と、前方のカーブ曲率に応じた自動減速を行います。';
+                } else {
+                    modeDesc.textContent = '操作方法: キャンバス内をドラッグして、自分だけのテストルートを自由に描画します。';
+                }
+            });
+        });
+
+        // 軌跡の履歴
+        const trajectory = [];
+        // 端点操作用の目的地リスト
+        const waypoints = [];
+        // 直前の通過ポイント（経路計算用）
+        let lastWaypoint = null;
+
+        clearBtn.addEventListener('click', () => {
+            trajectory.length = 0;
+            waypoints.length = 0;
+            lastWaypoint = null;
+            truck.steeringAngle = 0;
+        });
+
+        let isDrawingCourse = false;
+
+        // キャンバスの操作（クリックで端点追加・ドラッグでコース描画）
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (currentMode === 'waypoint') {
+                waypoints.push({ x, y });
+
+                // 最初の1点目が打たれたとき、現在のトラック位置をスタート地点として記録
+                if (!lastWaypoint) {
+                    lastWaypoint = { x: truck.x, y: truck.y };
+                }
+            } else if (currentMode === 'draw_course') {
+                isDrawingCourse = true;
+                currentCourse = [{ x, y }];
+
+                // 新しい道を描き始めるため現在情報をリセット
+                trajectory.length = 0;
+                waypoints.length = 0;
+                lastWaypoint = null;
+                truck.steeringAngle = 0;
+                truck.speed = 0;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (currentMode === 'draw_course' && isDrawingCourse) {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+
+                // 直前の点から一定距離（20px程度）離れたら追加して滑らかにする
+                if (currentCourse.length > 0) {
+                    const lastPt = currentCourse[currentCourse.length - 1];
+                    if (Math.hypot(x - lastPt.x, y - lastPt.y) > 20) {
+                        currentCourse.push({ x, y });
+                    }
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDrawingCourse) {
+                isDrawingCourse = false;
+                // 描き終わったらトラックを道のスタート地点に戻す
+                if (currentCourse.length > 0) {
+                    truck.x = currentCourse[0].x;
+                    truck.y = currentCourse[0].y;
+                    // トラックが道の方向を向くように角度を計算
+                    if (currentCourse.length > 1) {
+                        truck.angle = Math.atan2(currentCourse[1].y - currentCourse[0].y, currentCourse[1].x - currentCourse[0].x);
+                    } else {
+                        truck.angle = 0;
+                    }
+                }
+            }
+        });
+
+        // キー入力状態
+        const keys = {
+            ArrowUp: false,
+            ArrowDown: false,
+            ArrowLeft: false,
+            ArrowRight: false
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+                if (currentMode === 'manual') e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = false;
+                if (currentMode === 'manual') e.preventDefault();
+            }
+        });
+
+        // 角度を -π から π の範囲に正規化する
+        function normalizeAngle(angle) {
+            while (angle > Math.PI) angle -= 2 * Math.PI;
+            while (angle < -Math.PI) angle += 2 * Math.PI;
+            return angle;
+        }
+
+        // 線分と点の最短距離を求める関数(コースアウト判定に使用)
+        function distToSegment(px, py, x1, y1, x2, y2) {
+            const l2 = (x1 - x2) ** 2 + (y1 - y2) ** 2;
+            if (l2 === 0) return Math.hypot(px - x1, py - y1);
+            let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            const projX = x1 + t * (x2 - x1);
+            const projY = y1 + t * (y2 - y1);
+            return Math.hypot(px - projX, py - projY);
+        }
+
+        // コースアウト（脱輪）の判定
+        function checkOutOfBounds(corners) {
+            if (currentCourse.length < 2) return false;
+            const ROAD_RADIUS = 50; // コースの幅の半分(はみ出し許容範囲)
+
+            for (const corner of corners) {
+                let minDist = Infinity;
+                for (let i = 0; i < currentCourse.length - 1; i++) {
+                    const p1 = currentCourse[i];
+                    const p2 = currentCourse[i + 1];
+                    const d = distToSegment(corner.x, corner.y, p1.x, p1.y, p2.x, p2.y);
+                    if (d < minDist) minDist = d;
+                }
+                if (minDist > ROAD_RADIUS) return true; // 道幅を超えていたらアウト
+            }
+            return false;
+        }
+
+        // トラッククラス（キネマティック自転車モデル）
+        class Truck {
+            constructor(x, y, angle) {
+                this.x = x; // 後輪車軸の中心
+                this.y = y;
+                this.angle = angle; // 車体の向き(ヨー角)
+                this.speed = 0;
+                this.steeringAngle = 0; // 前輪の切れ角 (正:右, 負:左)
+
+                // 車両パラメーター (中型トラック4tクラスを想定)
+                this.wheelbase = 48; // 前輪と後輪の距離（ホイールベース）
+                this.MAX_SPEED = 3.5;
+                this.MAX_STEER = Math.PI * 38 / 180; // ハンドルの最大切れ角 (約38度)
+                this.ACCELERATION = 0.05;
+                this.BRAKING_FORCE = 0.15;
+                this.FRICTION = 0.015;
+                this.STEER_SPEED = 0.01; // ステアリングを回す速度を落とし、滑らかな旋回に
+
+                // 外形サイズ用
+                this.frontOverhang = 15;
+                this.rearOverhang = 22;
+                this.width = 24;
+            }
+
+            accelerate() {
+                if (this.speed < this.MAX_SPEED) {
+                    this.speed += this.ACCELERATION;
+                }
+            }
+
+            brake() {
+                if (this.speed > -this.MAX_SPEED / 2) {
+                    this.speed -= this.BRAKING_FORCE;
+                    if (Math.abs(this.speed) < 0.05) this.speed = 0;
+                }
+            }
+
+            friction() {
+                if (this.speed > 0) {
+                    this.speed -= this.FRICTION;
+                    if (this.speed < 0) this.speed = 0;
+                } else if (this.speed < 0) {
+                    this.speed += this.FRICTION;
+                    if (this.speed > 0) this.speed = 0;
+                }
+            }
+
+            turnLeft() {
+                this.steeringAngle -= this.STEER_SPEED;
+                if (this.steeringAngle < -this.MAX_STEER) this.steeringAngle = -this.MAX_STEER;
+            }
+
+            turnRight() {
+                this.steeringAngle += this.STEER_SPEED;
+                if (this.steeringAngle > this.MAX_STEER) this.steeringAngle = this.MAX_STEER;
+            }
+
+            straightenSteering() {
+                // ハンドルを自然に戻す（直進復元力）
+                if (this.steeringAngle > 0) {
+                    this.steeringAngle -= this.STEER_SPEED / 1.5;
+                    if (this.steeringAngle < 0) this.steeringAngle = 0;
+                } else if (this.steeringAngle < 0) {
+                    this.steeringAngle += this.STEER_SPEED / 1.5;
+                    if (this.steeringAngle > 0) this.steeringAngle = 0;
+                }
+            }
+
+            move() {
+                // アッカーマン・ステアリング / 自転車モデルに基づく運動方程式
+
+                // 動いている時だけ軌跡を残す（外形軌跡用に4隅を計算）
+                if (Math.abs(this.speed) > 0.1) {
+                    if (trajectory.length === 0 ||
+                        Math.hypot(this.x - trajectory[trajectory.length - 1].center.x, this.y - trajectory[trajectory.length - 1].center.y) > 2) {
+
+                        const cos = Math.cos(this.angle);
+                        const sin = Math.sin(this.angle);
+                        const getPoint = (lx, ly) => ({
+                            x: this.x + lx * cos - ly * sin,
+                            y: this.y + lx * sin + ly * cos
+                        });
+                        const p_fl = getPoint(this.wheelbase + this.frontOverhang, -this.width / 2);
+                        const p_fr = getPoint(this.wheelbase + this.frontOverhang, this.width / 2);
+                        const p_rl = getPoint(-this.rearOverhang, -this.width / 2);
+                        const p_rr = getPoint(-this.rearOverhang, this.width / 2);
+
+                        const isOut = checkOutOfBounds([p_fl, p_fr, p_rl, p_rr]);
+
+                        trajectory.push({
+                            center: { x: this.x, y: this.y },
+                            fl: p_fl,
+                            fr: p_fr,
+                            rl: p_rl,
+                            rr: p_rr,
+                            out: isOut // はみ出しているかどうかのフラグ
+                        });
+
+                        if (trajectory.length > 5000) {
+                            trajectory.shift();
+                        }
+                    }
+                }
+
+                // 後輪は常に車体の向いている方向に進む
+                this.x += Math.cos(this.angle) * this.speed;
+                this.y += Math.sin(this.angle) * this.speed;
+
+                // 向き（ヨー角）の更新: Rate = V / L * tan(δ)
+                this.angle += (this.speed / this.wheelbase) * Math.tan(this.steeringAngle);
+            }
+
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                // --- 車体の描画 ---
+                const hw = this.width / 2;
+
+                // 荷台（白・薄灰）
+                ctx.fillStyle = '#e0e0e0';
+                const bedLength = this.rearOverhang + this.wheelbase + this.frontOverhang - 20; // 前20px分をキャビンとする
+                ctx.fillRect(-this.rearOverhang, -hw, bedLength, this.width);
+
+                // キャビン（赤）
+                ctx.fillStyle = '#ff4444';
+                const cabX = this.wheelbase + this.frontOverhang - 20;
+                ctx.fillRect(cabX, -hw, 20, this.width);
+
+                // フロントガラス風
+                ctx.fillStyle = '#111';
+                ctx.fillRect(cabX + 10, -hw + 2, 5, this.width - 4);
+
+                // ヘッドライト
+                ctx.fillStyle = 'yellow';
+                ctx.shadowColor = 'yellow';
+                ctx.shadowBlur = 10;
+                ctx.fillRect(cabX + 16, -hw + 2, 4, 6);
+                ctx.fillRect(cabX + 16, hw - 8, 4, 6);
+                ctx.shadowBlur = 0;
+
+                // --- タイヤの描画 ---
+                // 左前輪
+                ctx.save();
+                ctx.translate(this.wheelbase, -14); // 前輪車軸位置
+                ctx.rotate(this.steeringAngle);     // 切れ角
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-6, -3, 12, 6);
+                ctx.restore();
+
+                // 右前輪
+                ctx.save();
+                ctx.translate(this.wheelbase, 14); // 前輪車軸位置
+                ctx.rotate(this.steeringAngle);    // 切れ角
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-6, -3, 12, 6);
+                ctx.restore();
+
+                // 左後輪（固定）
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-6, -15, 12, 6);
+                // 右後輪（固定）
+                ctx.fillRect(-6, 9, 12, 6);
+
+                // Pivot (後輪軸) のマーカー
+                ctx.fillStyle = '#0f0';
+                ctx.beginPath();
+                ctx.arc(0, 0, 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        const truck = new Truck(100, 100, 0);
+
+        // 端点操作ロジック（Pure Pursuitアルゴリズム ＋ カーブ予測減速）
+        function updateWaypointMode() {
+            if (waypoints.length > 0) {
+                const target = waypoints[0];
+
+                // カーブの基点を前輪にするため、前輪軸の現在座標を計算
+                const frontX = truck.x + Math.cos(truck.angle) * truck.wheelbase;
+                const frontY = truck.y + Math.sin(truck.angle) * truck.wheelbase;
+
+                const dx = target.x - frontX;
+                const dy = target.y - frontY;
+                const dist = Math.hypot(dx, dy);
+
+                // 1. 到達判定（前輪基準で近い距離、あるいはトラックの前輪が目標点を通り過ぎていたら次へ）
+                let pathDx = target.x - lastWaypoint.x;
+                let pathDy = target.y - lastWaypoint.y;
+                let pathLen = Math.hypot(pathDx, pathDy);
+
+                let ux = pathLen > 0 ? pathDx / pathLen : 0;
+                let uy = pathLen > 0 ? pathDy / pathLen : 0;
+
+                let vx = frontX - lastWaypoint.x;
+                let vy = frontY - lastWaypoint.y;
+                let dot = vx * ux + vy * uy; // 進行方向への投影距離
+
+                if (dist < 25 || (pathLen > 0 && dot >= pathLen)) {
+                    lastWaypoint = waypoints.shift();
+                    return; // 次のフレームで再計算
+                }
+
+                // 2. ステアリング制御 (Line-Tracking Pure Pursuit - 前輪基準・複数点先読み)
+                let targetAngleForSteer = 0;
+                let lookaheadDist = truck.wheelbase * 1.5; // 車輪ベースの1.5倍先を見る
+                let lookaheadX = target.x;
+                let lookaheadY = target.y;
+
+                if (pathLen > 1) {
+                    let proj = Math.max(0, dot);
+                    let rem = lookaheadDist;
+
+                    // 現在のセグメント内でルックアヘッド距離が収まる場合
+                    if (proj + rem <= pathLen) {
+                        lookaheadX = lastWaypoint.x + ux * (proj + rem);
+                        lookaheadY = lastWaypoint.y + uy * (proj + rem);
+                    } else {
+                        // 収まらない場合、以降のウェイポイントを辿って距離を稼ぐ
+                        rem -= (pathLen - proj);
+                        let currWP = target;
+
+                        for (let i = 1; i < waypoints.length; i++) {
+                            let nextWP = waypoints[i];
+                            let segDx = nextWP.x - currWP.x;
+                            let segDy = nextWP.y - currWP.y;
+                            let segLen = Math.hypot(segDx, segDy);
+
+                            if (rem <= segLen) {
+                                let segUx = segLen > 0 ? segDx / segLen : 0;
+                                let segUy = segLen > 0 ? segDy / segLen : 0;
+                                lookaheadX = currWP.x + segUx * rem;
+                                lookaheadY = currWP.y + segUy * rem;
+                                rem = 0;
+                                break;
+                            } else {
+                                rem -= segLen;
+                                currWP = nextWP;
+                                lookaheadX = currWP.x;
+                                lookaheadY = currWP.y;
+                            }
+                        }
+
+                        // それでも距離が余っている場合、最後のベクトルの延長線上に置く
+                        if (rem > 0 && waypoints.length >= 2) {
+                            let last1 = waypoints[waypoints.length - 2];
+                            let last2 = waypoints[waypoints.length - 1];
+                            let lDx = last2.x - last1.x;
+                            let lDy = last2.y - last1.y;
+                            let lLen = Math.hypot(lDx, lDy);
+                            if (lLen > 0) {
+                                let lUx = lDx / lLen;
+                                let lUy = lDy / lLen;
+                                lookaheadX = last2.x + lUx * rem;
+                                lookaheadY = last2.y + lUy * rem;
+                            }
+                        }
+                    }
+                    targetAngleForSteer = Math.atan2(lookaheadY - frontY, lookaheadX - frontX);
+                } else {
+                    targetAngleForSteer = Math.atan2(dy, dx);
+                }
+
+                let alpha = normalizeAngle(targetAngleForSteer - truck.angle);
+
+                // ステアリング角の計算（Pure Pursuit）
+                // ただし目標が近すぎる場合は大回りにならないよう、距離を縮める
+                let effectiveLookahead = Math.max(dist, lookaheadDist);
+                // 鋭いカーブが求められる場合（アルファ角が大きい）は鋭く切る
+                if (Math.abs(alpha) > Math.PI / 4) {
+                    effectiveLookahead = truck.wheelbase * 0.8;
+                }
+
+                let requiredSteer = Math.atan2(2.0 * truck.wheelbase * Math.sin(alpha), effectiveLookahead);
+
+                // 最大切れ角にクランプ（制限）
+                if (requiredSteer > truck.MAX_STEER) requiredSteer = truck.MAX_STEER;
+                if (requiredSteer < -truck.MAX_STEER) requiredSteer = -truck.MAX_STEER;
+
+                const steerDiff = Math.abs(requiredSteer - truck.steeringAngle);
+
+                // ハンドルの操作（現実のように徐々に切る）
+                if (truck.steeringAngle < requiredSteer - truck.STEER_SPEED) {
+                    truck.steeringAngle += truck.STEER_SPEED;
+                } else if (truck.steeringAngle > requiredSteer + truck.STEER_SPEED) {
+                    truck.steeringAngle -= truck.STEER_SPEED;
+                } else {
+                    truck.steeringAngle = requiredSteer; // 微小なズレはスナップ
+                }
+
+                // 3. 車速制御（ステアリング操作優先）
+                let targetSpeed = truck.MAX_SPEED;
+
+                // --- [A] ステアリング優先処理 ---
+                // 目標のタイヤ角度と現在のタイヤ角度にズレがある場合（これからハンドルを回す必要がある場合）
+                // 先にハンドルを切る動作を優先し、速度を極度に落とす（クリープレベルまで減速・待機）
+                if (steerDiff > 0.05) {
+                    targetSpeed = 0.3; // 早送りカーブにならず、止まりがけでハンドルを回す
+                } else {
+                    // --- [B] ハンドルが切れている状態での減速 ---
+                    // カーブ中は速度をほぼ0に近い安全速度に落としてゆっくり曲がる
+                    const steerRatio = Math.abs(truck.steeringAngle) / truck.MAX_STEER;
+                    targetSpeed *= Math.max(0.1, 1.0 - steerRatio * 0.9); // 最大角なら目標速度の10%にする
+                }
+
+                // --- [C] 前方のカーブ（次の端点）のキツさによる予測減速 ---
+                if (waypoints.length >= 2) {
+                    const dx2 = waypoints[1].x - waypoints[0].x;
+                    const dy2 = waypoints[1].y - waypoints[0].y;
+                    const nextRouteAngle = Math.atan2(dy2, dx2);
+                    const currentRouteAngle = Math.atan2(pathDy, pathDx); // 全体パスの角度を使用
+
+                    const turnSeverity = Math.abs(normalizeAngle(nextRouteAngle - currentRouteAngle));
+
+                    const brakingDistance = 120;
+                    if (dist < brakingDistance) {
+                        // カーブ角がキツいほど「コーナー通過上限速度」をガッツリ下げる
+                        const cornerSpeedLimit = truck.MAX_SPEED * Math.max(0.1, 1.0 - turnSeverity / Math.PI * 1.5);
+                        const weight = 1.0 - (dist / brakingDistance);
+                        const suggestedSpeed = (1 - weight) * targetSpeed + weight * cornerSpeedLimit;
+                        targetSpeed = Math.min(targetSpeed, suggestedSpeed);
+                    }
+                } else if (waypoints.length === 1 && dist < 80) {
+                    // 最後の目的地に近づいたら滑らかに減速して完全停止
+                    targetSpeed = Math.min(targetSpeed, truck.MAX_SPEED * (dist / 80));
+                }
+
+                // 4. トラックへの加減速命令（アクセル・ブレーキ）
+                if (truck.speed > targetSpeed + 0.5) {
+                    // 大きくスピードオーバーしていたらブレーキ
+                    truck.brake();
+                } else if (truck.speed > targetSpeed) {
+                    // 少しのオーバーなら摩擦・エンジンブレーキによる減速
+                    truck.speed -= truck.FRICTION;
+                } else {
+                    // 目標速度以下ならアクセルを踏む
+                    truck.accelerate();
+                }
+
+                // 超低速かつ最終目標付近なら、ズレ防止のため完全停止させる
+                if (waypoints.length === 1 && dist < 15 && Math.abs(truck.speed) < 0.2) {
+                    truck.speed = 0;
+                }
+
+            } else {
+                // 目的地がない時はハンドルをゆっくり戻しつつ減速
+                truck.straightenSteering();
+                truck.friction();
+            }
+            truck.move();
+        }
+
+        function updateManualMode() {
+            if (keys.ArrowUp) truck.accelerate();
+            if (keys.ArrowDown) truck.brake();
+
+            let isTurning = false;
+            // 単純な回転ではなく、ステアリング（前輪の切れ角）を操作する
+            if (keys.ArrowLeft) {
+                truck.turnLeft();
+                isTurning = true;
+            }
+            if (keys.ArrowRight) {
+                truck.turnRight();
+                isTurning = true;
+            }
+
+            if (!isTurning) {
+                truck.straightenSteering(); // 手を離すとハンドルが戻る
+            }
+
+            if (!keys.ArrowUp && !keys.ArrowDown) {
+                truck.friction();
+            }
+            truck.move();
+        }
+
+        function update() {
+            if (currentMode === 'manual') {
+                updateManualMode();
+            } else {
+                updateWaypointMode();
+            }
+        }
+
+        // 軌跡を色分けして描画する関数
+        // outs配列が渡された場合、脱輪している場所の色を赤にする
+        function drawLinePath(points, color, width = 1.5, outs = null) {
+            if (points.length < 2) return;
+            ctx.lineWidth = width;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            let currentIsOut = outs ? outs[0] : false;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+
+            for (let i = 1; i < points.length; i++) {
+                const isOut = outs ? outs[i] : false;
+
+                // 状態（セーフ⇔アウト）が変わったら一度パスを描いて色を切り替える
+                if (isOut !== currentIsOut) {
+                    ctx.strokeStyle = currentIsOut ? 'rgba(255, 50, 50, 0.9)' : color;
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(points[i - 1].x, points[i - 1].y);
+                    currentIsOut = isOut;
+                }
+                ctx.lineTo(points[i].x, points[i].y);
+            }
+            ctx.strokeStyle = currentIsOut ? 'rgba(255, 50, 50, 0.9)' : color;
+            ctx.stroke();
+        }
+
+        // 外形軌跡（スイープパス）を描画
+        function drawTrajectory() {
+            if (trajectory.length < 2) return;
+
+            const fls = trajectory.map(t => t.fl);
+            const frs = trajectory.map(t => t.fr);
+            const rls = trajectory.map(t => t.rl);
+            const rrs = trajectory.map(t => t.rr);
+            const outs = trajectory.map(t => t.out);
+
+            // はしご表現（外形軌跡のステップ描画）
+            ctx.lineWidth = 1;
+            for (let i = 0; i < trajectory.length - 7; i += 7) {
+                const t = trajectory[i];
+                ctx.strokeStyle = t.out ? 'rgba(255, 50, 50, 0.5)' : 'rgba(255, 255, 255, 0.1)';
+                ctx.beginPath();
+                ctx.moveTo(t.fl.x, t.fl.y);
+                ctx.lineTo(t.fr.x, t.fr.y);
+                ctx.lineTo(t.rr.x, t.rr.y);
+                ctx.lineTo(t.rl.x, t.rl.y);
+                ctx.closePath();
+                ctx.stroke();
+            }
+
+            // 外形のライン描画時に、脱輪情報を渡す
+            drawLinePath(fls, 'rgba(0, 255, 255, 0.7)', 2, outs);
+            drawLinePath(frs, 'rgba(0, 255, 255, 0.7)', 2, outs);
+            drawLinePath(rls, 'rgba(255, 100, 100, 0.7)', 2, outs);
+            drawLinePath(rrs, 'rgba(255, 100, 100, 0.7)', 2, outs);
+        }
+
+        // 端点とガイドラインの描画
+        function drawWaypoints() {
+            if (waypoints.length === 0) return;
+
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+
+            // トラック現在地から目的地までの点線
+            ctx.beginPath();
+            ctx.moveTo(truck.x, truck.y);
+            for (let i = 0; i < waypoints.length; i++) {
+                ctx.lineTo(waypoints[i].x, waypoints[i].y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 端点マーカー
+            for (let i = 0; i < waypoints.length; i++) {
+                const wp = waypoints[i];
+                ctx.beginPath();
+                ctx.arc(wp.x, wp.y, 6, 0, Math.PI * 2);
+                ctx.fillStyle = i === 0 ? '#ff00ff' : '#00ff00';
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(i + 1, wp.x, wp.y - 12);
+            }
+        }
+
+        // 描画ループ
+        function draw() {
+            ctx.fillStyle = '#2c3e50'; // 少し深い色合い
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // コース（道路）の描画
+            if (currentCourse.length >= 2) {
+                // 白線（路側帯レイヤー）
+                ctx.beginPath();
+                ctx.moveTo(currentCourse[0].x, currentCourse[0].y);
+                for (let i = 1; i < currentCourse.length; i++) {
+                    ctx.lineTo(currentCourse[i].x, currentCourse[i].y);
+                }
+                ctx.strokeStyle = '#ecf0f1';
+                ctx.lineWidth = 110;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+                ctx.stroke();
+
+                // アスファルトレイヤー
+                ctx.strokeStyle = '#34495e';
+                ctx.lineWidth = 100;
+                ctx.stroke();
+
+                // センターライン（オレンジの破線）
+                ctx.strokeStyle = '#e67e22';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([20, 20]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+
+            drawTrajectory();
+            drawWaypoints();
+            truck.draw(ctx);
+
+            // 計器類UI（ダッシュボード風）
+            ctx.fillStyle = 'rgba(20, 20, 30, 0.8)';
+            ctx.beginPath();
+            ctx.roundRect(5, 5, 260, 100, 8);
+            ctx.fill();
+
+            ctx.fillStyle = '#00ffcc';
+            ctx.font = '16px Consolas, monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            // スピードと角度
+            ctx.fillText("Speed:  " + truck.speed.toFixed(2), 15, 15);
+            ctx.fillText("Angle:  " + Math.trunc(truck.angle * 180 / Math.PI) + "°", 15, 35);
+
+            // ステアリング角をバーで可視化 (-MAX_STEER 〜 MAX_STEER)
+            ctx.fillText("Steer: ", 15, 55);
+            ctx.fillStyle = '#444';
+            ctx.fillRect(90, 58, 100, 10);
+
+            // 中央線
+            ctx.fillStyle = '#888';
+            ctx.fillRect(139, 56, 2, 14);
+
+            // 切れ角のインジケーター
+            const steerRatio = truck.steeringAngle / truck.MAX_STEER; // -1 to +1
+            ctx.fillStyle = '#ff3333';
+            ctx.fillRect(140 + steerRatio * 50 - 4, 56, 8, 14);
+
+            ctx.fillStyle = '#00ffcc';
+            ctx.fillText("Mode:   " + (currentMode === 'manual' ? "Direct" : "Waypoint"), 15, 75);
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // 初回起動時にコースを生成
+        generateRandomCourse();
+        requestAnimationFrame(loop);
+    </script>
+</body>
+
+</html>

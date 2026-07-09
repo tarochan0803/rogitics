@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "logistics-road-seg": {
+      "type": "stdio",
+      "command": "/bin/bash",
+      "args": [
+        "scripts/road_seg_mcp.sh"
+      ],
+      "env": {
+        "ROAD_SEG_PYTHON": "/home/ncnadmin/.pyenv/versions/fa-env/bin/python"
+      }
+    }
+  }
+}

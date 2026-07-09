@@ -1,0 +1,32 @@
+{
+  "name": "batch",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "golden": "node run_golden_benchmark.js",
+    "golden:dry": "node run_golden_benchmark.js --dry-run",
+    "index3d:benchmark": "node run_index3d_benchmark.js",
+    "index3d:benchmark:dry": "node run_index3d_benchmark.js --dry-run",
+    "index3d:smoke:phase6": "node run_index3d_benchmark.js --case CONFIRMED_PASS_DEMO_CLEAR",
+    "index3d:smoke": "node run_index3d_smoke.js",
+    "index3d:smoke:demo": "node run_index3d_smoke.js --demo",
+    "index3d:smoke:existing-route": "node run_index3d_smoke.js --existing-route",
+    "index3d:smoke:phase3": "node run_index3d_smoke.js --demo",
+    "index3d:smoke:phase4": "node run_index3d_smoke.js --demo",
+    "index3d:smoke:phase5": "node run_index3d_smoke.js --demo",
+    "index3d:smoke:phase7": "node run_index3d_smoke.js --demo",
+    "index3d:smoke:phase7-playback": "node run_index3d_smoke.js --phase7-playback",
+    "test": "npm run golden:dry"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@turf/turf": "^6.5.0",
+    "csv-parser": "^3.2.0",
+    "polygon-clipping": "^0.15.3",
+    "puppeteer": "^24.39.0"
+  }
+}

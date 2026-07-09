@@ -1,0 +1,17 @@
+[Unit]
+Description=LOGISTICS OS v8 - YOLO Server
+After=network.target
+
+[Service]
+Type=simple
+User=ncnadmin
+WorkingDirectory=/home/ncnadmin/LOGISTICS_OS_v8.0/server
+ExecStart=/home/ncnadmin/LOGISTICS_OS_v8.0/venv/bin/python app.py
+Restart=always
+RestartSec=5
+Environment=PORT=8001
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

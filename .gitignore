@@ -1,0 +1,46 @@
+# ── 認証情報ファイル（絶対にコミットしないこと）──
+# runtime-config.js は Google Maps API キー等を保持するため Git 管理外。
+# 配布時は runtime-config.sample.js を雛形として配布し、各端末で書き換える運用。
+user_config.js
+user_config copy.js
+runtime-config.js
+config/runtime.local.json
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+.mcp-venv/
+
+# ── Node ──
+node_modules/
+src/batch/output/
+dist/
+*.log
+*.pid
+
+# ── Runtime（ワールドJSON・delegate出力・MCPランタイム）──
+runtime/
+
+# ── モデル重み（大容量バイナリ）──
+*.pt
+*.pth
+*.onnx
+road_seg/models/
+
+# ── データセット画像・比較出力・キャッシュ ──
+road_seg/dataset/images/
+road_seg/dataset/masks/
+road_seg/dataset/.pending/
+road_seg/dataset_weak/
+road_seg/.compare_deeplab/
+road_seg/.tile_cache/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+*.pyc
+web_server.cpython-*.pyc

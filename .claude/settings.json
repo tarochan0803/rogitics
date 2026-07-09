@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"FAIL\" \"C:\\\\Users\\\\T7654~1.KAW\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-t-kawaguchi-Desktop--------truck-LOGISTICS-OS-v8-0\\\\ddf51a63-9baf-4297-803f-b8ff72d00b98\\\\tasks\\\\btucpx23c.output\" && grep -B2 -A2 \"vehicle: 2t_flat\" \"C:\\\\Users\\\\T7654~1.KAW\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-t-kawaguchi-Desktop--------truck-LOGISTICS-OS-v8-0\\\\ddf51a63-9baf-4297-803f-b8ff72d00b98\\\\tasks\\\\btucpx23c.output\" | head -4 && sed -n '/vehicle: 2t_flat/,/vehicle: 10t/p' \"C:\\\\Users\\\\T7654~1.KAW\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-t-kawaguchi-Desktop--------truck-LOGISTICS-OS-v8-0\\\\ddf51a63-9baf-4297-803f-b8ff72d00b98\\\\tasks\\\\btucpx23c.output\" | grep -E \"lt35|sharp\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\T7654~1.KAW\\AppData\\Local\\Temp\\claude\\c--Users-t-kawaguchi-Desktop--------truck-LOGISTICS-OS-v8-0\\ddf51a63-9baf-4297-803f-b8ff72d00b98\\tasks"
+    ]
+  }
+}

@@ -1,0 +1,1202 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!-- saved from url=(0036)http://localhost:62014/WebForm1.aspx -->
+<html><head id="Head1"><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><title>
+	ＮＣＮ Ｗｅｂ住所検索システム
+</title>
+
+		
+		<style>
+		body {margin: 0; padding: 0;}
+		#ZMap {position: absolute; top: 230; bottom: 50; left:50; right:50;
+
+		}
+		textarea {
+			width: 700px;  /* 横幅 */
+			height: 190px; /* 高さ */
+		}
+		
+		//モノクロ
+		/*		#ZMap {position: absolute; top: 230; bottom: 50; left:50; right:50;
+		  -webkit-filter: grayscale(100%);
+  -moz-filter: grayscale(100%);
+  -ms-filter: grayscale(100%);
+  -o-filter: grayscale(100%);
+  filter: grayscale(100%);
+		}*/
+		
+		/*#ZMap {position: absolute; top: 100; bottom: 100; left:100; right:100; width: 100%;}*/
+	        .auto-style1 {
+                width: 555px;
+                height: 185px;
+                margin-top: 0px;
+            }
+	        .auto-style2 {
+                width: 897px;
+            }
+            .rotate_test {
+			    width: 10px;
+			    background-color:  #ccc;
+			    display: inline-block; _display: inline;
+			}
+            .rotate_test {
+			    transform:rotate(0deg);    /* 中心を基準点に時計回りに回転する */
+			}
+	  </style>
+        <meta content="Microsoft Visual Studio .NET 7.1" name="GENERATOR"><meta content="Visual Basic .NET 7.1" name="CODE_LANGUAGE"><meta content="JavaScript" name="vs_defaultClientScript"><meta content="http://schemas.microsoft.com/intellisense/ie5" name="vs_targetSchema">  
+             
+ 
+		
+		<!-- ローダーのURLをscriptでロードする -->
+
+	  <!-- ログイン認証の場合 -->
+	<script src="https://app.zip-site.com/auth/jsapi/loader.htm"></script>　
+
+        <script type="text/javascript">
+            window.onload = function () {
+                //ブラウザの戻るボタンの無効化
+                history.pushState(null, null, null);
+                window.addEventListener("popstate", function () {
+                    history.pushState(null, null, null);
+                });
+            }
+            
+            var imagePath ='./image/'
+            
+            //マップ関係------------
+			
+            // 地図オブジェクト
+            var map = null;
+			var pl =null;	//ポリゴン
+
+            // failedイベントリスナー設定
+            // 認証クラスでエラーが発生した場合にfailedが発行される
+            ZisAuth.addEventListener("failed", function (e) {
+                alert("エラーが発生しました。(" + e.status.code + ")");
+            });
+
+            // readyイベントリスナー設定
+            // 認証クラスで地図が利用可能な場合にreadyが発行される
+            ZisAuth.addEventListener("ready", function (e) {
+                // マップエレメント要素を取得する
+                var mapElement = document.getElementById("ZMap");
+
+                // MapOptionsをデフォルト値から変更する場合各パラメータに値を設定
+                var mapOptions = ZisAuth.getMapOption();
+                mapOptions.zipsMapType = 'kP8KjZdn';//スタンダード地図
+                //               mapOptions.zipsMapType = 'hWeH6ZPY';//スタンダード地図 ラスター描画
+                
+                //                mapOptions.zipsMapType = 'RGi4Cw8h';//住宅地図　モノクロ
+                
+                //               mapOptions.zipsMapType = 'Ai3Y2Jwp';//住宅地図
+                //     mapOptions.zoom = 22; //近景
+                //     mapOptions.zoom=3; //遠景 日本地図レベル　
+                mapOptions.zoom = 18; //zoomレベル
+                //              mapOptions.maxZoom = 18; //MAXzoomレベル
+
+                //                mapOptions.center = new ZDC.LatLng(35.5, 139.5);
+                mapOptions.center = new ZDC.LatLng(35.67536978587026, 139.7386232923013);//エイトワンビル
+
+                //mapOptions.center = new ZDC.LatLng(35.795966728835495, 139.74522023924695);//埼玉スタート
+                
+                mapOptions.movable = true;
+                mapOptions.zoomable = true;
+
+
+                //const mapOptions = {
+                //    zipsMapType: 'kP8KjZdn',  // スタンダード地図デザイン
+                //    zipsAuthCycle: '10',
+                //    zipsPolling: 'MmQyYjFiZGI0YmYxNDU2NjRiZmQ1M2UzZTc1ZjZlOTRmRlA5dHFiZE4vbmxuUmNzTW4wcC93PT0=',
+
+                //    center: new ZDC.LatLng(lat, lng),  // ★中心点の緯度経度を設定
+
+                //movable: true,
+                //zoomable: true,
+                //keyboardOperation: true,
+                //mouseOperation: true,
+                //touchOperation: true,
+
+                //};
+
+				var mrk_widget;
+					
+                // 地図を生成
+                map = new ZDC.Map(
+                    mapElement,
+                    mapOptions,
+                    function () {
+                        // Success callback
+                        // コントロールを追加する
+                        // コンパスの表示
+                        map.addControl(new ZDC.Compass('top-right'));
+                        // ズームボタンの表示
+                        map.addControl(new ZDC.ZoomButton('bottom-right'));
+                        // スケールバーの表示
+                        map.addControl(new ZDC.ScaleBar('bottom-left'));
+                        //センターマーカーの表示
+                        map.addControl(new ZDC.CenterMarker());
+
+						//作図モードに遷移する
+						//map.drawFigure('LINE');
+						
+						var sBukkenNo = '';
+						var popupText ='';
+						
+						//タツミ北関東
+			            //createMarker(36.6811540498075, 139.76789824254527,ZDC.MARKER_COLOR_ID_GREEN_S,ZDC.MARKER_NUMBER_ID_3_S,'タツミ北関東！');
+			            createMarker('',0,36.6811540498075, 139.76789824254527,ZDC.MARKER_COLOR_ID_GREEN_S,null,'タツミ！');
+	             		
+	             		//オカメイ
+	             		createMarker('',0,34.87881993135051, 135.7174997407854,ZDC.MARKER_COLOR_ID_GREEN_S,null,'オカメイ！');
+
+	             		//マルコマ
+	             		createMarker('',0,34.51334959225035, 135.57320752260122,ZDC.MARKER_COLOR_ID_GREEN_S,null,'マルコマ　美原工場！');
+
+	             		//ハイビック
+	             		createMarker('',0,34.88781288712618, 137.81557031486594,ZDC.MARKER_COLOR_ID_GREEN_S,null,'ハイビック　浜松第1工場（天竜）！');
+
+	             		//セブン
+	             		createMarker('',0,35.4437553297377, 137.078865867897,ZDC.MARKER_COLOR_ID_GREEN_S,null,'セブン工業　美濃加茂第四工場！');
+
+	             		//大三
+	             		createMarker('',0,35.56087222866258, 140.31054809618894,ZDC.MARKER_COLOR_ID_GREEN_S,null,'大三商行！' + '<img src= "' + imagePath + 'daisan.jpg" alt="TAG index" border="0" width="193" height="130">');
+	             		
+	             		//NCN
+	                    createMarker('',0,35.67536978587026, 139.7386232923013,ZDC.MARKER_COLOR_ID_GREEN_S,null,'NCN！');
+	             		
+	             		//海山	             		
+	             		createMarker('TVP405',0,35.05027136884968, 139.065320069472,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_1_S,' 海山！' + popupText);
+	             
+	             
+						//萩野邸
+						sBukkenNo = 'TPQ60X';
+						//popupText = '<div id="text-button" onclick="window.open(\'https://system.ncn-se.co.jp/NcnWebP2/Bukken/bukken_syousai_new.aspx?BukkenNo=' + sBukkenNo + '\')">' +sBukkenNo + '<img src="open_in_new.svg" alt="TAG index" border="0"></div>';
+				 		
+				 		createMarker('TPQ60X',0,35.64007084555076, 139.69556913582508,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'タツミ　荻野邸\n追加運搬費(2t・小配送)！' + popupText);
+
+//202301
+						//OBQ602
+				 	    createMarker('OBQ602',0,35.0049712457,136.6528219944,ZDC.MARKER_COLOR_ID_YELLOW_S,ZDC.MARKER_NUMBER_ID_3_S,'セブン　東産業　渡辺邸' + popupText);
+	             	
+						//TRQ103
+				 	    createMarker('TRQ103',0,35.1474077691,136.9384554036,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'セブン　ニケン　井原邸' + popupText);
+	             	
+						//TRQ103
+				 	    //createMarker('TRQ103',0,35.67546978587026, 139.7386232923013,ZDC.MARKER_COLOR_ID_YELLOW_S,ZDC.MARKER_NUMBER_ID_3_S,'サンプル工務店　渡辺邸' + popupText);
+
+
+				 	    createMarker('NKO404',1,35.0905021159,136.9379394531,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'特建 セブン　ろばのこ療育園　そら　サイエンス' + popupText );
+
+				 	    createMarker('NKO508',1,34.06486933367915, 131.48377229025905,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'特建 ランバー　くみあい運輸　銘建' + popupText );
+
+						//TRQ103
+				 	    createMarker('TVNB15',1,35.60886553563153, 139.7156195998624,ZDC.MARKER_COLOR_ID_YELLOW_S,ZDC.MARKER_NUMBER_ID_3_S,'タツミ 　オーワークス　戸越6丁目プロジェクト' + popupText );
+
+				 	    createMarker('NTO101',0,35.60771556508462, 139.71283610159298,ZDC.MARKER_COLOR_ID_YELLOW_S,ZDC.MARKER_NUMBER_ID_3_S,'大三 　大熊工業　中澤様邸PJ (実績)3.5tユニック 荷揚げあり　2t車・4t車以下限定' + popupText + '');
+
+				 	    createMarker('TPO927',0,35.65347591504227, 139.3222747496938,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'タツミ　ミューズの家　○○邸' + popupText + '');
+
+				 	    createMarker('MJNB20',0,35.658953984139806, 139.57810036000447,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'タツミ 　直営店（株式会社 MUJI HOUSE）　○○邸' + popupText + '');
+
+				 	    createMarker('MJO723',0,35.55336662693341, 139.4744448852266,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'タツミ 　MUJIHOUSE湘南店（株式会社大川）　○○邸　私道（細）あり' + popupText + '');
+
+				 	    createMarker('RCO810',1,35.73207893774969, 139.95394028473095,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'大三　RCC　○○邸' + popupText );
+
+				 	    createMarker('MJO811',1,37.44209102046665, 138.87917562646615,ZDC.MARKER_COLOR_ID_BLUE_S,ZDC.MARKER_NUMBER_ID_4_S,'タツミ　MUJIHOUSE新潟店（株式会社丸山組）　○○邸' + popupText );
+
+				 	    createMarker('OTOA05',1,34.615165607118094, 135.59657830597678,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'マルコマ　ジョブ　○○邸' + popupText );
+
+				 	    createMarker('NMMC13',1,35.63326344825114, 139.64638433055643,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'セブン　テラジマ　○○邸' + popupText );
+
+				//	    createMarker('TVL808',1,35.6086793049872, 139.6943009820286,ZDC.MARKER_COLOR_ID_RED_S,ZDC.MARKER_NUMBER_ID_2_S,'セブン　テラジマ　○○邸' + popupText );
+
+
+						// インスタンスを作成
+						//mrk_widget = new ZDC.Popup(new ZDC.LatLng(35.64007084555076, 139.69556913582508), {htmlSource: 'TPQ60X　荻野邸\n追加運搬費(2t・小配送)'});
+						
+						// 吹き出しをMapに追加
+						//map.addWidget(mrk_widget);
+						
+				        /* ★マーカを作成 */
+				        //mrk_widget = new ZDC.Marker(
+				        //  new ZDC.LatLng(35.64007084555076, 139.69556913582508),
+				        //  {
+				        //    styleId: ZDC.MARKER_COLOR_ID_RED_S,
+				        //    contentStyleId: ZDC.MARKER_NUMBER_ID_3_S
+				        //  }
+				        //);
+				        
+				        /* ★マーカをクリック時のイベント登録 */
+				       // mrk_widget.addEventListener('click', function() {
+				       //   openPopup(mrk_widget.getLatLng()); // マーカの表示位置を取得して渡す
+				       // });
+
+				       // map.addWidget(mrk_widget);
+
+
+
+                        /* 地図をクリックしたときの動作 */
+                        map.addEventListener('click', function (event) {
+                            // イベント発生時の値を取得 event={String(イベント名), LatLng(緯度経度), Point(ピクセル座標)}
+                            // 例 event = {type: "click", latlng: f, point: a}
+
+                            /* ★地図をクリックした位置が新しい中心点になるように地図を移動する */
+                            map.setCenter(event.latlng);
+                            //  map.setCenter(new ZDC.LatLng(35.675498337956434, 139.73405280637692));//座標指定
+
+                            var txtLatlng = document.getElementById("txtLatlng");
+                            var ArraytLatlng = txtLatlng.value.split(',');
+
+                            //map.setCenter(new ZDC.LatLng(ArraytLatlng[0], ArraytLatlng[1]));//テキストボックスの値へ移動　座標指定
+
+                           
+                            //緯度経度のテキストボックス表示
+                            getClickLatLng(event.latlng);
+                            
+
+                            //if( pl !== null ) {
+							//  map.removeWidget(pl);
+							//}
+							
+						var txtPoly = document.getElementById("txtPoly");
+
+						var ArrayPoly = txtPoly.value.split(',');
+
+                      //    var x=139.7386230000000;
+                      //   var y=35.6753690000000;
+                         var x=event.latlng.lng;	//経度 139
+                         var y=event.latlng.lat;	//緯度 35
+                         var h = 0.000030;
+                         var w = 0.000020;
+                         var rotatedAngle = 45;
+                         //w = Number(ArrayPoly[0])*0.0000111;
+                         h = Number(ArrayPoly[1])*0.0000090;
+                         
+                         //1度当たり度数を出して、緯度に変換
+                         var oneLat = (distance(y, x, y, x+1)*1000);
+                         w= Number(ArrayPoly[0])/(oneLat);
+                         
+                         var oneLng = (distance(y, x, y+1, x)*1000);
+                         h= Number(ArrayPoly[1])/(oneLng);
+                         
+                         //角度                         
+                         rotatedAngle =  Number(ArrayPoly[2]);
+                         
+  // 頂点の配列(外側)を作成
+  //var latlons = [];
+  //latlons.push(new ZDC.LatLng(35.6753690000000, 139.7386230000000));
+  //latlons.push(new ZDC.LatLng(35.6753690000000, 139.7386430000000));
+  //latlons.push(new ZDC.LatLng(35.6753710000000, 139.7386430000000));
+  //latlons.push(new ZDC.LatLng(35.6753710000000, 139.7386230000000));
+  
+  //図形が中心になるようにする。
+  y=y-(h/2);
+  x=x-(w/2);
+    // 頂点の配列(外側)を作成
+  var latlons = [];
+  latlons.push(new ZDC.LatLng(y, x));
+  latlons.push(new ZDC.LatLng(y, x+w));
+  latlons.push(new ZDC.LatLng(y+h, x+w));
+  latlons.push(new ZDC.LatLng(y+h, x));
+  
+  // 頂点の配列(内側)を作成
+  var latlons2 = [];
+  latlons2.push(new ZDC.LatLng(35.6921309732335, 139.7584403258811));
+  latlons2.push(new ZDC.LatLng(35.6705924719100, 139.7661655538930));
+  latlons2.push(new ZDC.LatLng(35.6921309732335, 139.7584403258811));
+
+
+  // ポリゴンを作成
+//  pl = new ZDC.Polygon([latlons,latlons2], {
+  pl = new ZDC.Polygon([latlons], {
+    fill: '#ff0000',
+    fillPattern: 'solid',
+    stroke: '#990000',
+    strokeWidth: 2,
+    strokePattern: 'solid',
+    opacity: 0.6,
+    rotatedView : rotatedAngle
+  });
+
+
+  // ポリゴンを地図オブジェクト(map)に追加
+  map.addWidget(pl);
+
+//距離を表示(km→m表示のため1000を掛ける)
+    var txtWORD = document.getElementById("txtWORD");
+	
+	//経度1度あたりのメートル数を取得
+	var LatLong = (distance(y, x, y, x+1)*1000);
+//ポリゴンの横幅を表示                
+//txtWORD.value = (distance(y, x, y, x+w)*1000);
+//txtWORD.value = (distance(y, x, y+h, x)*1000);
+//txtWORD.value = w;
+
+  							  
+                        });
+                    },
+                    function () {
+                        // Failure callback
+                    }
+                );
+
+            });
+
+            //loadイベントリスナー設定
+            //認証クラスでログイン可能状態になった場合にloadが発行される
+            ZisAuth.addEventListener("load", function (e) {
+                const obj = {
+                    uid: "2Ec5mMed"
+                    , pwd: "qQE2Y2ze"
+                    , sid: "50000001"
+                    , device_flag: 1
+                }
+                ZisAuth.login(obj);
+
+
+            });
+
+
+            /* 緯度経度を表示する */
+            function getClickLatLng(latlng) {
+
+                var txtClickLatlng = document.getElementById("txtClickLatlng");
+                txtClickLatlng.value = latlng.lat + ',' + latlng.lng;
+                //                alert('緯度：' + latlng.lat + ' 経度：' + latlng.lng);
+            }
+
+            //テキストボックスの緯度経度を取得
+            function getxtLatLng() {
+
+                var txtLatlng = document.getElementById("txtLatlng");
+                var ArraytLatlng = txtLatlng.value.split(',');
+
+                var r = ArraytLatlng[0] + ',' + ArraytLatlng[1];
+                return r;
+                //                alert('緯度：' + latlng.lat + ' 経度：' + latlng.lng);
+            }
+
+            function logout() {
+                ZisAuth.logout();
+
+                //マップを削除
+                var target = document.getElementById("ZMap");
+                target.parentNode.removeChild(target);
+
+                alert('ログアウトしました');
+
+
+            }
+
+            //移動ボタンをしたとき
+            function centermove(txt) {
+                
+                var txtLatlng = document.getElementById(txt);
+                var ArraytLatlng = txtLatlng.value.split(',');
+
+                map.setCenter(new ZDC.LatLng(ArraytLatlng[0], ArraytLatlng[1]));//座標指定
+
+                //alert(ArraytLatlng[0]);
+
+                //txtLatlng.value = ArraytLatlng[0] + ' ' + ArraytLatlng[1];
+
+                //  mapOptions.center = new ZDC.LatLng(ArraytLongitudeLatitude[0], ArraytLongitudeLatitude[1]);//エイトワンビル
+            }
+            //テキストボックスの値をコピー
+            function adressCopy(){
+                var txtClickLatlng = document.getElementById("txtClickLatlng");
+                var txtLatlng = document.getElementById("txtLatlng");
+                txtLatlng.value = txtClickLatlng.value;
+
+                //var target = document.getElementById("googlemapURL");
+                //target.value = string.link("https://www.google.co.jp/maps/@35.1858948,136.9473611,17z?hl=ja");
+                
+                var target = document.getElementById("googleURL");
+                //target.href = "https://www.google.co.jp/maps/@35.6890937,139.7543844,17z?hl=ja";
+                target.href = "https://www.google.co.jp/maps/place/@" + txtClickLatlng.value + ",17z?hl=ja";
+    
+            }
+            // クリップボードへコピー（コピーの処理）
+            function copyToClipboard(tagValue) {
+                if (navigator.clipboard) {
+                    return navigator.clipboard.writeText(tagValue).then(function () {
+                        messageActive()
+                    })
+                } else {
+             
+                    document.execCommand('copy')
+                    messageActive()
+                }
+            }
+            //webAPIのログアウト
+            function webAPI_logout(aid) {
+                const url3 = 'https://api.zip-site.com/api/auth/logout'
+                    + '?aid=' + encodeURIComponent(aid);
+                fetch(url3)
+                    .then((response) => {
+                        return response.json();
+            })
+            .then((json) => {
+                if (json.status.code === '10300000') {
+
+                    // 成功
+                    //alert('ステータス：ログアウト成功' + json.status.code);
+            }
+            else {
+                    // エラー
+                    alert('ステータス：ログアウトエラー' + json.status.code);
+
+            }
+            });
+            }
+            //住所検索
+            function webAPI_Adrress(kid, aid, lmtinf) {
+
+                //クリック座標を取得
+                var txtClickLatlng = document.getElementById("txtClickLatlng");
+                var ArraytLatlng = txtClickLatlng.value.split(',');
+                var t_message = document.getElementById("t_message");
+                t_message.value = '';
+
+                const url2 = 'https://api.zip-site.com/api/zips/general/address'
+                    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                    + '&zis_authtype=' + 'aid'
+                    + '&zis_aid=' + encodeURIComponent(aid)
+                    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                    + '&address_level=' + 'TBN' //TBN:地番・戸番
+                    + '&position=' + ArraytLatlng[1] + ',' + ArraytLatlng[0]  //["経度", "緯度"]で指定するので取得した座標と逆にする
+                    + '&limit=' + encodeURIComponent('0,1')
+                    + '&datum=' + 'JGD';
+
+                
+                //            const url2 = 'https://api.zip-site.com/api/zips/general/address'
+                //+ '?zis_zips_authkey=' + encodeURIComponent(kid)
+                //+ '&zis_authtype=' + 'aid'
+                //+ '&zis_aid=' + encodeURIComponent(aid)
+                //+ '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                //+ '&address_level=' + 'TBN' //TBN:地番・戸番
+                //                + '&position=' + '139.7381056260099,35.6747030543529'
+                //+ '&limit=' + encodeURIComponent('0,1')
+                //+ '&datum=' + 'JGD';
+
+                //const url2 = 'https://api.zip-site.com/api/zips/general/address'
+                //    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                //    + '&zis_authtype=' + 'aid'
+                //    + '&zis_aid=' + encodeURIComponent(aid)
+                //    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                //    + '&address_level=' + 'TBN' //TBN:地番・戸番
+                //    + '&position=' + '139.73484173109,35.62040846024437'
+                //    + '&limit=' + encodeURIComponent('0,1')
+                //    + '&datum=' + 'JGD';
+
+                var txtAddress = document.getElementById("txtAddress");
+
+                //txtAddress.value = url2
+
+                fetch(url2)
+                    .then((response) => {
+                        t_message.value = t_message.value + 'レスポンス：' + response.status + '\n';
+
+                return response.json();
+            })
+            .then((json) => {
+                if (json.status === 'OK') {
+                    // エラー
+                    //alert('ステータス：住所検索成功' + json.status + json.result.info.hit );
+                    var jsonAddress = json.result.item[0].address;
+            //alert('ステータス：住所検索成功' + jsonAddress);
+            t_message.value = t_message.value + 'ヒット数：　' + json.result.info.hit + '\n';
+            t_message.value = t_message.value + '該当住所：　' + jsonAddress + '\n';
+
+            //jsonをテキストにする
+            //JSON.stringify(json, null, 2)
+
+                   
+
+            t_message.value = t_message.value + '--------------------\n';
+            t_message.value = t_message.value + '\n' + JSON.stringify(json, null, 2) + '\n';
+
+            //     json.result.items.address
+            //   const jsonAddress = json.result.items.address;
+            // エリア情報と機能情報を抽出する
+
+            //const r = json.result.items.address.find(element => {
+            //    return element.id === FUNC_ID && element.subid === FUNC_SUBID;
+            //});
+
+            //txtLatlng.value = JSON.stringify(json, null, 2); //jsonをテキストにする
+            txtAddress.value = jsonAddress;
+
+            } else {
+                // エラー
+                //alert('ステータス：住所検索エラー' + json.status);
+                t_message = t_message + 'ステータス：住所検索エラー' + json.status + '\n';
+
+
+            }
+
+            })
+
+            }
+        
+
+            //住所検索 文字検索
+            function webAPI_Adrress_Word(kid, aid, lmtinf) {
+
+                //検索住所文字列を取得
+                var txtWORD = document.getElementById("txtWORD");
+                var t_message = document.getElementById("t_message");
+
+                var txtGetLatlng = document.getElementById("txtGetLatlng");   //座標
+
+                //クリア
+                t_message.value = '';
+                txtWORDAddress.value = '';
+                txtGetLatlng.value = '';
+
+                const url2 = 'https://api.zip-site.com/api/zips/general/address'
+                    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                    + '&zis_authtype=' + 'aid'
+                    + '&zis_aid=' + encodeURIComponent(aid)
+                    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                    //+ '&address_level=' + 'OAZ' //OAZ:大字、TBN:地番・戸番                
+                    + '&address_level=' + 'TBN' //OAZ:大字、TBN:地番・戸番                
+                    + '&word=' + encodeURIComponent(txtWORD.value) //検索文字列
+                    + '&word_match_type=' + '3' //マッチタイプ
+                    + '&limit=' + encodeURIComponent('0,1')
+                    + '&datum=' + 'JGD';
+                //const url2 = 'https://api.zip-site.com/api/zips/general/address'
+                //    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                //    + '&zis_authtype=' + 'aid'
+                //    + '&zis_aid=' + encodeURIComponent(aid)
+                //    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                //    + '&address_level=' + 'OAZ' //OAZ:大字、TBN:地番・戸番                
+                //    + '&word=' + txtWORD.value //検索文字列
+                //    + '&word_match_type=' + '3' //マッチタイプ
+                //    + '&limit=' + encodeURIComponent('0,1')
+                //    + '&datum=' + 'JGD';
+
+                //                + '&address_level=' + 'TBN' //TBN:地番・戸番
+
+                //var txtAddress = document.getElementById("txtWORDAddress");
+
+                //txtWORDAddress.value = url2
+
+                fetch(url2)
+                    .then((response) => {
+                        t_message.value = t_message.value + 'レスポンス：' + response.status + '\n';
+
+                return response.json();
+            })
+            .then((json) => {
+                if (json.status === 'OK') {
+
+                    // エラー
+                    //alert('ステータス：住所検索成功' + json.status + json.result.info.hit );
+                    var jsonAddress = json.result.item[0].address;
+            //alert('ステータス：住所検索成功' + jsonAddress);
+            t_message.value = t_message.value + 'ヒット数：　' + json.result.info.hit + '\n';
+            t_message.value = t_message.value + '該当住所：　' + jsonAddress + '\n';
+
+
+            var jsonPosition = json.result.item[0].position[1] + ',' + json.result.item[0].position[0];
+
+
+            //jsonをテキストにする
+            //JSON.stringify(json, null, 2)
+            t_message.value = t_message.value + '--------------------\n';
+            t_message.value = t_message.value + '\n' + JSON.stringify(json, null, 2) + '\n';
+
+
+            //     json.result.items.address
+            //   const jsonAddress = json.result.items.address;
+            // エリア情報と機能情報を抽出する
+
+            //const r = json.result.items.address.find(element => {
+            //    return element.id === FUNC_ID && element.subid === FUNC_SUBID;
+            //});
+
+
+            //txtLatlng.value = JSON.stringify(json, null, 2); //jsonをテキストにする
+            // txtWORDAddress.value = jsonAddress;
+            //クリック座標テキストボックスに座標を返す
+            //var txtClickLatlng = document.getElementById("txtClickLatlng");
+            //txtClickLatlng.value = jsonPosition;
+
+            //検索結果が一件だったら
+            if (json.result.info.hit == 1) {
+                txtWORDAddress.value = jsonAddress;
+                txtGetLatlng.value = jsonPosition;
+                copyToClipboard(jsonPosition)   //クリップボードに座標コピー
+            } else {
+                if (json.result.info.hit > 1) {
+                    txtWORDAddress.value = '複数件該当';
+                    txtGetLatlng.value = '複数件該当';
+                }
+            }
+                            
+            } else {
+                // エラー
+                //alert('ステータス：住所検索エラー' + json.status);
+                t_message = t_message + 'ステータス：住所検索エラー' + json.status + '\n';
+
+            }
+
+            })
+
+            }
+
+            //住所クレンジング
+            function webAPI_ac_standard(kid, aid, lmtinf) {
+
+                //検索住所文字列を取得
+                var txtWORD = document.getElementById("txtWORD");
+                var t_message = document.getElementById("t_message");
+                var txtGetLatlng = document.getElementById("txtGetLatlng");   //座標
+
+                //クリア
+                t_message.value = '';
+                txtWORDAddress.value = '';
+                txtGetLatlng.value = '';
+
+
+                const url2 = 'https://api.zip-site.com/api/service/ac_standard'
+                    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                    + '&zis_authtype=' + 'aid'
+                    + '&zis_aid=' + encodeURIComponent(aid)
+                    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                    + '&word=' + encodeURIComponent(txtWORD.value) //検索文字列  //
+                    + '&use_kana=true' //カナ住所マッチングの使用
+                    + '&datum=' + 'JGD';
+
+
+                var txtAddress = document.getElementById("txtWORDAddress");
+
+                //txtWORDAddress.value = url2
+
+                fetch(url2)
+                    .then((response) => {
+                        //alert('ステータスa：' + response.status);
+                        t_message.value = t_message.value + 'レスポンス：' + response.status + '\n';
+
+                return response.json();
+            })
+            .then((json) => {
+                if (json.status === 'OK') {
+                    // エラー
+                    //alert('ステータス：住所検索成功' + json.status + json.result.info.hit );
+                    var jsonAddress = json.result.item[0].address;
+            //alert('ステータス：住所検索成功' + jsonAddress);
+            t_message.value = t_message.value + 'ヒット数：' + json.result.info.hit + '\n';
+            t_message.value = t_message.value + '該当住所：　' + jsonAddress + '\n';
+
+            var jsonPosition = json.result.item[0].match_position[1] + ',' + json.result.item[0].match_position[0];
+
+            //jsonをテキストにする
+            //JSON.stringify(json, null, 2)
+            t_message.value = t_message.value + '--------------------\n';
+            t_message.value = t_message.value + '\n' + JSON.stringify(json, null, 2) + '\n';
+
+
+            //     json.result.items.address
+            //   const jsonAddress = json.result.items.address;
+            // エリア情報と機能情報を抽出する
+
+            //const r = json.result.items.address.find(element => {
+            //    return element.id === FUNC_ID && element.subid === FUNC_SUBID;
+            //});
+
+            //txtLatlng.value = JSON.stringify(json, null, 2); //jsonをテキストにする
+            // txtWORDAddress.value = jsonAddress;
+            //クリック座標テキストボックスに座標を返す
+            //var txtClickLatlng = document.getElementById("txtClickLatlng");
+            //txtClickLatlng.value = jsonPosition;
+
+            //クレンジングした住所を返す
+            //txtWORD.value = jsonAddress
+
+
+            //検索結果が一件だったら
+            if (json.result.info.hit == 1) {
+                txtWORDAddress.value = jsonAddress;
+                txtGetLatlng.value = jsonPosition;
+                copyToClipboard(jsonPosition)   //クリップボードに座標コピー
+            } else {
+                if (json.result.info.hit > 1) {
+                    txtWORDAddress.value = '複数件該当';
+                    txtGetLatlng.value = '複数件該当';
+                }
+            }
+
+            } else {
+                // エラー
+                //alert('ステータス：住所検索エラー' + json.status);
+                t_message = t_message + 'ステータス：住所検索エラー' + json.status + '\n';
+
+            }
+
+            })
+            }
+
+            //地番住所変換
+            function webAPI_bluemap_to_address(kid, aid, lmtinf) {
+
+                //検索住所文字列を取得
+                //var txtTiban = document.getElementById("txtTiban");
+                var txtWORD = document.getElementById("txtWORD");
+                var t_message = document.getElementById("t_message");
+                
+                var txtClickLatlng = document.getElementById("txtGetLatlng");   //座標
+
+                txtWORDAddress.value = '';
+                txtClickLatlng.value = '';
+
+                t_message.value = '';
+
+                const url2 = 'https://api.zip-site.com/api/zips/general/bluemap_to_address'
+                    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                    + '&zis_authtype=' + 'aid'
+                    + '&zis_aid=' + encodeURIComponent(aid)
+                    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                    + '&bluemap_address=' + encodeURIComponent(txtWORD.value)
+                    + '&datum=' + 'JGD';
+
+                //const url2 = 'https://api.zip-site.com/api/zips/general/bluemap_to_address'
+                //    + '?zis_zips_authkey=' + encodeURIComponent(kid)
+                //    + '&zis_authtype=' + 'aid'
+                //    + '&zis_aid=' + encodeURIComponent(aid)
+                //    + '&zis_lmtinf=' + encodeURIComponent(lmtinf)
+                //    + '&bluemap_address=' + '%E6%9D%B1%E4%BA%AC%E9%83%BD%E6%B8%AF%E5%8C%BA%E8%8A%9D%E6%B5%A6%E4%B8%89%E4%B8%81%E7%9B%AE1%E7%95%AA1%E5%8F%B7%20msb%20Tamachi%20%E7%94%B0%E7%94%BA%E3%82%B9%E3%83%86%E3%83%BC%E3%82%B7%E3%83%A7%E3%83%B3%E3%82%BF%E3%83%AF%E3%83%BC%20N22%E9%9A%8E'
+                //    + '&datum=' + 'JGD';
+
+                //                + '&address_level=' + 'TBN' //TBN:地番・戸番
+
+                var txtAddress = document.getElementById("txtWORDAddress");
+
+                //txtWORDAddress.value = url2
+
+                fetch(url2)
+                    .then((response) => {
+                        //alert('ステータスa：' + response.status);
+                        t_message.value = t_message.value + 'レスポンス：' + response.status + '\n';
+                return response.json();
+            })
+            .then((json) => {
+                        
+                if (json.status === 'OK') {
+                    // エラー
+                    //alert('ステータス：住所検索成功' + json.status + json.result.info.hit );
+
+                    var jsonAddress = '';
+            var jsonPosition = '';
+            if (json.result.item[0].address == null) {
+                jsonAddress = '該当なし';
+                jsonPosition = '該当なし';
+            } else {
+                jsonAddress= json.result.item[0].address[0].address;
+                jsonPosition = json.result.item[0].address[0].position[1] + ',' + json.result.item[0].address[0].position[0];
+            }
+            //alert('ステータス：地番住所変換成功' + jsonAddress);
+            //t_message.value = t_message.value + 'ヒット数：' + json.result.info.hit + '\n';
+            t_message.value = t_message.value + '該当住所：　' + jsonAddress + '\n';
+
+
+                            
+            //jsonをテキストにする
+            //JSON.stringify(json, null, 2)
+
+            //json.result.info.hit　検索結果総数
+
+            //txtLatlng.value = JSON.stringify(json, null, 2); //jsonをテキストにする
+            t_message.value = t_message.value + '--------------------\n';
+            t_message.value = t_message.value + '\n' +  JSON.stringify(json, null, 2) + '\n';
+            //地番、座標を反映
+            txtWORDAddress.value = jsonAddress;
+            txtClickLatlng.value = jsonPosition;
+
+            copyToClipboard(jsonPosition)   //クリップボードに座標コピー
+
+
+            } else {
+                // エラー
+                //alert('ステータス：地番住所変換エラー' + json.status);
+                t_message = t_message + 'ステータス：地番住所変換エラー' + json.status + '\n';
+
+            }
+
+            })
+
+            } 
+
+            //機能情報
+            const Func_Data = [
+                ['address', '0002', '0001', '住所検索'],
+                ['bm_address', '0002', '0007', 'premium 地番検索'],
+                ['bluemap_to_address', '0002', '0027', 'premium 地番住所変換'],
+                ['address_to_bluemap', '0002', '0022', 'premium 住所地番変換'],
+                ['ac_standard', '0004', '0001', '住所クレンジング（標準）'],
+                ['ac_premium', '0004', '0003', 'premium 住所クレンジング（高機能）'],
+                ['bluemap_cleansing', '0004', '0005', 'premium 地番クレンジング']
+            ];
+
+            //function getFuncData(FuncName) {
+
+            //    for(Func_Data)
+
+            //    return 
+            //}
+            function mapChange() {
+
+                // MapOptionsをデフォルト値から変更する場合各パラメータに値を設定
+                var mapOptions = ZisAuth.getMapOption();
+                mapOptions.zipsMapType = 'kP8KjZdn';//スタンダード地図
+                //                mapOptions.zipsMapType = 'RGi4Cw8h';//住宅地図　モノクロ
+                //mapOptions.zipsMapType = 'Ai3Y2Jwp';//住宅地図
+                map.reinitialize(mapOptions);
+                alert('ステータス：初期化：' );
+
+            }
+            
+            function rangeAngleChange() {
+            
+	            var rangeAngle = document.getElementById("rangeAngle");
+	            var txtPoly = document.getElementById("txtPoly");
+	            var kaiten = document.getElementById("kaiten");
+	            
+	            var ArrayPoly = txtPoly.value.split(',');
+	            
+            	txtPoly.value = String(ArrayPoly[0]) + "," + String(ArrayPoly[1]) + "," + -(rangeAngle.value);
+            	
+            	//txtPoly.value = String(ArrayPoly[0]) & "," ;
+            	
+            	kaiten.style.transform = "rotate(" + rangeAngle.value + "deg)";
+
+            }
+            
+            function rdoTruckSizeChange() {
+            
+          	    //        var rdoTruckSize = document.pet_form.rdoTruckSize;
+
+	            //var rdoTruckSize = document.getElementsByName("rdoTruckSize");
+	            
+	            let elements = document.getElementsByName('rdoTruckSize');
+				let len = elements.length;
+				let checkValue = '';
+
+				for (let i = 0; i < len; i++){
+				    if (elements.item(i).checked){
+				        checkValue = elements.item(i).value;
+				    }
+				}
+	            
+	            var txtPoly = document.getElementById("txtPoly");
+	            
+	            var ArrayPoly = txtPoly.value.split(',');
+
+	            if(checkValue=='2t'){
+	            	txtPoly.value = '1.8,4.7' + ',' + ArrayPoly[2];
+            	}
+	            if(checkValue=='4t'){
+	            	txtPoly.value = '2.35,9.3' + ',' + ArrayPoly[2];
+            	}
+	           if(checkValue=='10t'){
+	            	txtPoly.value = '2.5,12' + ',' + ArrayPoly[2];
+            	}
+            	
+	            //if(rdoTruckSize.value=='2t'){
+	            //	txtPoly.value = '1.7,3' + ',' + ArrayPoly[2];
+            	//}
+	            //if(rdoTruckSize.value=='4t'){
+	            //	txtPoly.value = '2,5' + ',' + ArrayPoly[2];
+            	//}
+	           //if(rdoTruckSize.value=='10t'){
+	            //	txtPoly.value = '2.5,10' + ',' + ArrayPoly[2];
+            	//}
+
+            }
+
+
+
+            //マップ関係----------------
+            //webAPI------------
+            //住所検索を押したとき
+            function webAPI_SearchAddess(FuncName,SearchType) {
+                //mapのログアウト
+                //logout();
+
+                //ログイン
+                const url = 'https://api.zip-site.com/api/auth/login'
+                    + '?user_id=' + encodeURIComponent('2Ec5mMed')
+                    + '&password=' + encodeURIComponent('qQE2Y2ze')
+                    + '&service_id=' + encodeURIComponent('50000001')
+                    + '&device_flag=' + encodeURIComponent('1');
+                fetch(url)
+                    .then((response) => {
+                        return response.json();
+            })
+            .then((json) => {
+                if (json.status.code === '10100000') {
+                    //alert('ステータスログイン成功：' + json.status.code);
+
+                    //機能名を検索して機能コード、サブ機能コードを取得
+//                            var ArrayIndex = Func_Data.findIndex(function (element, index, array) { return element.indexOf('bluemap_to_address') >= 0; });
+                    var ArrayIndex = Func_Data.findIndex(item => item[0] === FuncName);
+            //SearchType
+            //alert('ステータスログイン成功：' + ArrayIndex+ ' ' + Func_Data[ArrayIndex][0] + ' ' + Func_Data[ArrayIndex][1] + ' ' + Func_Data[ArrayIndex][2]);
+
+
+            //住所検索
+            //const FUNC_ID = '0002';
+            //const FUNC_SUBID = '0001';
+                            const FUNC_ID = Func_Data[ArrayIndex][1];
+                            const FUNC_SUBID = Func_Data[ArrayIndex][2];
+
+            // エリア情報と機能情報を抽出する
+                            const func = json.result.items.func.find(element => {
+                                return element.id === FUNC_ID && element.subid === FUNC_SUBID;
+            });
+
+            //var txtLatlng = document.getElementById("txtLatlng");
+            //txtLatlng.value = func.areaCode;
+
+
+            //var txtLatlng = document.getElementById("txtLatlng");
+            //txtLatlng.value = JSON.stringify(json, null, 2); //jsonをテキストにする
+
+            // エリア情報と機能情報をカンマで接続
+                            const lmtinf = func.areaCode + ',' + func.funcInfo;
+
+            if (FuncName == 'address') {
+                if (SearchType == 'position') {
+                    //住所検索
+                    webAPI_Adrress(json.result.kid, json.result.aid, lmtinf);
+                }
+                if (SearchType == 'word') {
+                    webAPI_Adrress_Word(json.result.kid, json.result.aid, lmtinf);
+
+                }
+            }
+            if (FuncName == 'bluemap_to_address') {
+                webAPI_bluemap_to_address(json.result.kid, json.result.aid, lmtinf);
+
+            }
+            //住所クレンジング
+            if (FuncName == 'ac_standard') {
+                webAPI_ac_standard(json.result.kid, json.result.aid, lmtinf);
+
+            }
+            //認証承認ID有効性確認
+            if (FuncName == 'aidcheck') {
+                aidcheck(json.result.kid, json.result.aid, lmtinf);
+
+            }
+
+              
+
+
+            //ログアウト
+            webAPI_logout(json.result.aid);
+
+
+            }
+            else {
+                // エラー
+                alert('ステータス：エラー' + json.status.code);
+            }
+            });
+            }
+            //webAPI------------
+            window.addEventListener('beforeunload', function (e) {
+
+                //↓ちゃんと動いてるか分からん、「ページを離れますか？」でキャンセルしたときは動いている模様
+                //mapのログアウト
+                logout();
+
+                // イベントをキャンセルする
+                e.preventDefault();
+                // Chrome では returnValue を設定する必要がある
+                e.returnValue = '';
+            });
+            
+            //2点間の距離を計算(戻り値の単位：km)
+            //https://qiita.com/kawanet/items/a2e111b17b8eb5ac859a
+            const R = Math.PI / 180;
+			 function distance(lat1, lng1, lat2, lng2) 
+			 {
+				  lat1 *= R;
+				  lng1 *= R;
+				  lat2 *= R;
+				  lng2 *= R;
+				  return 6371 * Math.acos(Math.cos(lat1) * Math.cos(lat2) * Math.cos(lng2 - lng1) + Math.sin(lat1) * Math.sin(lat2)); 
+			 }
+
+            
+           	// 吹き出しをMapに追加
+           	
+           function createMarker(sBukkenNo,useImageFlg,lat,lng,sColer,sContert,sPopupText) {
+
+				if(sBukkenNo!=''){
+		            sPopupText = sPopupText + '<div id="text-button" onclick="window.open(\'https://system.ncn-se.co.jp/NcnWebP2/PcKadouJokyouHyo/BunsyoKanri_sel.aspx?BukkenNo=' + sBukkenNo + '\')">' +sBukkenNo + '&nbsp<img src="./image/open_in_new.png" alt="TAG index" border="0" height="13"></div>';			 			             		
+	            }
+				//popupText = '<div id="text-button" onclick="window.open(\'https://system.ncn-se.co.jp/NcnWebP2/Bukken/bukken_syousai_new.aspx?BukkenNo=' + sBukkenNo + '\')">' +sBukkenNo + '<img src="open_in_new.svg" alt="TAG index" border="0" ></div>';
+
+				//画像の存在チェック
+				
+				
+				if(useImageFlg){
+					sPopupText = sPopupText + ' <img src= "' + imagePath + sBukkenNo + '.jpg' + '" alt="TAG index" border="0" width=auto; height="130"> ';
+				}
+				
+				var mrk_widget2;
+				
+				//var sOptString ='';
+	            //sOptString = 'styleId:' + sColer;
+	            
+	            //if(sContert!=''){
+		        //    sOptString =  sOptString + ',contentStyleId:' + sContert
+	            //}
+	            
+		        /* ★マーカを作成 */
+
+
+				//if(sBukkenNo=='NMMC13'){
+			    //    mrk_widget2 = new ZDC.Marker(
+			    //      new ZDC.LatLng(lat,lng),
+			    //      {
+				//            custom: {
+				//			    base : {
+				//			      imgPos: new ZDC.Point(-13, -38),
+				//			      imgSrc: 'mapicon-color5.gif',
+				//			      imgSize: new ZDC.Point(21, 28)
+				//			    }
+				//		    }
+			    //      }
+			    //    );
+				//}else{
+					mrk_widget2 = new ZDC.Marker(
+			          new ZDC.LatLng(lat,lng),
+			          {
+				            styleId: sColer,
+				            contentStyleId: sContert
+			          }
+			        );				
+				//}
+		        
+		        
+		        /* ★マーカをクリック時のイベント登録 */
+		        mrk_widget2.addEventListener('click', function() {
+		          openPopup(mrk_widget2.getLatLng(),sPopupText); // マーカの表示位置を取得して渡す
+		        });
+
+		        map.addWidget(mrk_widget2);
+		        
+		        return mrk_widget2;
+	        }
+	        
+
+          /* ★吹き出しの表示 */
+		  function openPopup(latlng,popupText) {
+		  
+ 	        //googlemap リンクを追加
+	 		popupText = popupText + '<div id="text-button" style="display: inline-block; _display: inline;" onclick="window.open(\'https://www.google.com/maps?&t=k&z=20&q=' + latlng.lat + ',' +  latlng.lng + '\')">' + '' + '<img src= "' + imagePath + 'googlemap_icon.jpg" alt="TAG index" border="0"></div>';
+		  
+		    map.addWidget(
+		      new ZDC.Popup(
+		        latlng, 
+		        {
+		          //htmlSource: '<a href="https://www.google.com/?hl=ja" target="_blank" >GOOGLE<img src="open_in_new.svg" alt="TAG index" border="0"></a>', 
+		          //htmlSource: popupText + '<div id="text-button" onclick="window.open(\'https://system.ncn-se.co.jp/NcnWebP2/Bukken/bukken_syousai_new.aspx?BukkenNo=TPQ60X\')">TPQ60X<img src="open_in_new.svg" alt="TAG index" border="0"></div>', 
+		          htmlSource: popupText,
+		          
+		          //htmlSource: '<img src="sushi1.png">',
+		          //htmlSource: '<input onclick="location.href=\'https://www.google.com/?hl=ja\' " value="EE">',
+		          //htmlSource: '<button onclick="window.open(\'https://www.google.com/?hl=ja\')" >TPQ60X</button>',
+		          //htmlSource: '<button onclick="window.open(\'https://system.ncn-se.co.jp/NcnWebP2/Bukken/bukken_syousai_new.aspx?BukkenNo=TPQ60X\')" >TPQ60X</button>',
+		          offset: new ZDC.Point(0, -18)
+		        }
+		      )
+		    );
+		  }
+        </script>                            
+	
+  </head>
+  <body>
+  <!--   <form name="pet_form" style="display: inline"> -->
+		
+		  <div id="ZMap"></div>
+		  <table border="1" align="left">
+ <tbody><tr>
+      <th align="left" class="auto-style2">
+  <!-- ログイン認証の場合 -->
+  <button onclick="logout()">logout</button><br>    地図描画：ローダーの読込ごとに1PV ※10,000PV/月に収める
+
+       
+        <br>
+  
+  <input type="text" id="txtClickLatlng" name="txtClickLatlng" minlength="0" maxlength="40" size="100" value="" style="display:none;">
+        
+          <button onclick="adressCopy()" style="display:none;">↓座標コピー</button>
+
+        
+  
+  <input type="text" id="txtLatlng" name="txtLatlng" minlength="0" maxlength="40" size="100" value="35.67536978587026, 139.7386232923013" style="display:none;">
+  <button onclick="centermove('txtLatlng')" style="display:none;">移動(1PV)</button>
+        
+  
+  <button onclick="webAPI_SearchAddess('address','position')" style="display:none;">クリック座標の住所検索(1PV)</button>
+        
+  
+  <input type="text" id="txtAddress" name="txtAddress" minlength="0" maxlength="40" size="100" value="" style="display:none;">
+
+        
+  <label for="name">検索用住所</label>
+        <br>
+  <input type="text" id="txtWORD" name="txtWORD" minlength="0" maxlength="40" size="100" value="東京都千代田区永田町2-13-5">
+<br>
+  <button onclick="webAPI_SearchAddess('address','word')">住所検索(1PV)</button>
+
+  
+  <button onclick="webAPI_SearchAddess(&#39;bluemap_to_address&#39;,&#39;&#39;)">地番住所変換検索(2PV)</button>
+    <button onclick="webAPI_SearchAddess(&#39;ac_standard&#39;,&#39;&#39;)">住所クレンジング(5PV)</button>
+        <br>
+        <br>
+  <label for="name">取得住所</label>
+  <input type="text" id="txtWORDAddress" name="txtWORDAddress" minlength="0" maxlength="40" size="100" value="">
+          <br>
+  <label for="name">取得座標</label>
+  <input type="text" id="txtGetLatlng" name="txtGetLatlng" minlength="0" maxlength="40" size="100" value=""> <button onclick="centermove('txtGetLatlng')">移動(1PV)</button>
+          
+          <br>
+  <label for="name">ポリゴン設定　幅(m)：長さ(m)：回転角度(度)</label>
+  <input type="text" id="txtPoly" name="txtPoly" minlength="0" maxlength="40" size="10" value="1.8,4.7,0">
+  <input type="radio" id="rdoTruckSize1" name="rdoTruckSize" value="2t" checked onchange="rdoTruckSizeChange()"> 2t平
+ <input type="radio" id="rdoTruckSize2" name="rdoTruckSize" value="4t" onchange="rdoTruckSizeChange()"> 4t平
+ <input type="radio" id="rdoTruckSize3" name="rdoTruckSize" value="10t" onchange="rdoTruckSizeChange()"> 10t平
+
+          <input type="range" id="rangeAngle" name="rangeAngle" min="-180" max="180" step="10" onchange="rangeAngleChange()" value="0">  <div id="kaiten" name="kaiten" class="rotate_test">I</div>
+          </th>
+         <th align="left">
+            <label for="name">結果表示</label><br>
+       　　 <textarea id="t_message" name="t_message" placeholder="" class="auto-style1" spellcheck="false" ></textarea>
+          </th>
+     </tr>
+     </tbody></table>
+
+
+  <script>
+      // JavaScript API処理
+  </script>	
+		
+
+		
+			<font face="MS UI Gothic"></font><font face="MS UI Gothic"></font><font face="MS UI Gothic">
+			</font><font face="MS UI Gothic"></font><font face="MS UI Gothic"></font><font face="MS UI Gothic">
+			</font><font face="MS UI Gothic"></font><font face="MS UI Gothic"></font>
+			<br>
+			<br>
+			<br>
+			<br>
+			<br>
+	
+
+
+</body></html>

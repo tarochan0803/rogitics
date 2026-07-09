@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LOGISTICS OS - PLATEAU 3D Tiles Test</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet" />
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://esm.sh/three@0.184.0",
+        "three/addons/": "https://esm.sh/three@0.184.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <style>
+    :root {
+      --bg-base: #101114;
+      --bg-panel: #1a1c22;
+      --bg-input: #252936;
+      --border: #303544;
+      --text-main: #e8edf6;
+      --text-muted: #9aa6b9;
+      --accent: #3b82f6;
+      --success: #12b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-family: Inter, "Noto Sans JP", sans-serif;
+    }
+
+    .shell { display: flex; width: 100%; height: 100%; }
+    .view { position: relative; flex: 1; min-width: 0; height: 100%; }
+    #map3d { width: 100%; height: 100%; }
+    #map3d canvas { display: block; }
+
+    .status-panel {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: min(320px, calc(100% - 40px));
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      background: rgba(20, 23, 30, 0.86);
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+
+    .panel-head {
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .panel-body div { margin-bottom: 5px; color: var(--text-muted); font-size: 12px; }
+    .panel-body span { color: var(--success); font-weight: 700; }
+
+    .control {
+      width: 380px;
+      max-width: 42vw;
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--border);
+      background: var(--bg-panel);
+    }
+
+    .app-head {
+      margin-bottom: 22px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+    }
+
+    h1 { margin-top: 5px; font-size: 20px; line-height: 1.25; }
+    h2 { margin-bottom: 12px; color: var(--text-muted); font-size: 14px; }
+
+    .section {
+      margin-bottom: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.025);
+    }
+
+    .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 13px; }
+    .field span { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+
+    .input {
+      width: 100%;
+      min-height: 40px;
+      padding: 9px 11px;
+      border: 1px solid #3a4050;
+      border-radius: 6px;
+      outline: none;
+      background: var(--bg-input);
+      color: var(--text-main);
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .button {
+      width: 100%;
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .button:disabled { cursor: progress; opacity: 0.65; }
+
+    .log-section { flex: 1; min-height: 180px; display: flex; flex-direction: column; }
+
+    #log {
+      flex: 1;
+      min-height: 160px;
+      padding: 10px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0c0d11;
+      color: #7dd3fc;
+      font: 11px/1.45 Consolas, "Courier New", monospace;
+    }
+
+    #log div { margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+
+    @media (max-width: 860px) {
+      body { overflow: auto; }
+      .shell { min-height: 100vh; flex-direction: column; }
+      .view { height: 60vh; min-height: 420px; }
+      .control { width: 100%; max-width: none; border-left: 0; border-top: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="view">
+      <div id="map3d"></div>
+      <aside class="status-panel">
+        <header class="panel-head">REALTIME PLATEAU STATUS</header>
+        <div class="panel-body">
+          <div>3D Tiles: <span id="tilesStatus">Ready</span></div>
+          <div>Source: <span id="sourceStatus">PLATEAU datacatalog</span></div>
+          <div>初回読み込みは数秒かかります。</div>
+        </div>
+      </aside>
+    </section>
+
+    <aside class="control">
+      <header class="app-head">
+        <div class="eyebrow">LOGISTICS OS</div>
+        <h1>PLATEAU 3D Tiles Test</h1>
+      </header>
+
+      <section class="section">
+        <h2>Area</h2>
+        <label class="field">
+          <span>検証エリア</span>
+          <select id="areaSelect" class="input">
+            <option value="tokyo">東京・新宿</option>
+            <option value="yokohama">横浜・みなとみらい</option>
+            <option value="osaka">大阪・梅田</option>
+          </select>
+        </label>
+        <button id="loadButton" class="button" type="button">3D Tilesを読み込む</button>
+      </section>
+
+      <section class="section">
+        <h2>Stream Configuration</h2>
+        <label class="field">
+          <span>LOD負荷スケール</span>
+          <input id="lodScale" class="input" type="number" min="0.1" max="1" step="0.1" value="0.3" />
+          <span>小さいほど軽くなります。まずは 0.3 推奨です。</span>
+        </label>
+      </section>
+
+      <section class="section log-section">
+        <h2>System Log</h2>
+        <div id="log"><div>[SYSTEM] 初期化しました。ローカルサーバー経由で開くと安定します。</div></div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+    import { TilesRenderer } from "https://esm.sh/3d-tiles-renderer@0.4.28?external=three";
+    import { GLTFExtensionsPlugin } from "https://esm.sh/3d-tiles-renderer@0.4.28/plugins?external=three";
+
+    const AREAS = {
+      tokyo: { label: "東京・新宿", lat: 35.6895, lng: 139.6917 },
+      yokohama: { label: "横浜・みなとみらい", lat: 35.4579, lng: 139.6328 },
+      osaka: { label: "大阪・梅田", lat: 34.7025, lng: 135.4959 }
+    };
+
+    const GSI_REVGEO = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress";
+    const PLATEAU_GRAPHQL = "https://api.plateauview.mlit.go.jp/datacatalog/graphql";
+    const DRACO_DECODER_PATH = "https://www.gstatic.com/draco/versioned/decoders/1.5.7/";
+    const DEFAULT_GEOID_HEIGHT_M = 37;
+    const DEFAULT_Y_OFFSET_M = -3.5;
+
+    const container = document.getElementById("map3d");
+    const areaSelect = document.getElementById("areaSelect");
+    const loadButton = document.getElementById("loadButton");
+    const lodScaleInput = document.getElementById("lodScale");
+    const tilesStatus = document.getElementById("tilesStatus");
+    const sourceStatus = document.getElementById("sourceStatus");
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x101114);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 20000);
+    camera.position.set(260, 280, 420);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    container.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 20, 0);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x242833, 1.8));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(400, 900, 600);
+    scene.add(sun);
+
+    const grid = new THREE.GridHelper(600, 30, 0x42526e, 0x263244);
+    grid.material.transparent = true;
+    grid.material.opacity = 0.55;
+    scene.add(grid);
+
+    let activeTiles = null;
+
+    function resize() {
+      const width = Math.max(1, container.clientWidth);
+      const height = Math.max(1, container.clientHeight);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height, false);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      if (activeTiles?.tiles) {
+        activeTiles.tiles.setResolutionFromRenderer(camera, renderer);
+        activeTiles.tiles.update();
+      }
+      renderer.render(scene, camera);
+    }
+
+    function log(message) {
+      const logDiv = document.getElementById("log");
+      const item = document.createElement("div");
+      item.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logDiv.appendChild(item);
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    function setStatus(text, color = "var(--success)") {
+      tilesStatus.textContent = text;
+      tilesStatus.style.color = color;
+    }
+
+    async function muniCodeFor(lat, lng) {
+      const response = await fetch(`${GSI_REVGEO}?lat=${lat}&lon=${lng}`);
+      if (!response.ok) throw new Error(`GSI reverse geocoder HTTP ${response.status}`);
+      const data = await response.json();
+      const code = data?.results?.muniCd;
+      if (!code) throw new Error("自治体コードを取得できませんでした");
+      return String(code);
+    }
+
+    async function resolveTileset(area) {
+      const muniCode = await muniCodeFor(area.lat, area.lng);
+      log(`自治体コード: ${muniCode}`);
+
+      const query = `{ datasets(input:{areaCodes:["${muniCode}"], includeTypes:["bldg"]}){ name items{ format url name } } }`;
+      const response = await fetch(PLATEAU_GRAPHQL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query })
+      });
+      if (!response.ok) throw new Error(`PLATEAU datacatalog HTTP ${response.status}`);
+
+      const data = await response.json();
+      if (data.errors?.length) throw new Error(data.errors[0].message || "PLATEAU datacatalog error");
+
+      const datasets = data?.data?.datasets || [];
+      const items = datasets.flatMap((dataset) =>
+        (dataset.items || []).map((item) => ({ ...item, datasetName: dataset.name }))
+      );
+      const tiles = items.filter((item) => String(item.format).toUpperCase() === "CESIUM3DTILES" && item.url);
+      const picked = tiles.find((item) => /lod1/i.test(`${item.name} ${item.url}`))
+        || tiles.find((item) => /no_texture/i.test(`${item.name} ${item.url}`))
+        || tiles[0];
+
+      if (!picked) throw new Error("建築物3D Tilesが見つかりませんでした");
+      return { ...picked, muniCode };
+    }
+
+    function ecef(lat, lng, h = 0) {
+      const rLat = lat * Math.PI / 180;
+      const rLng = lng * Math.PI / 180;
+      const a = 6378137.0;
+      const f = 1.0 / 298.257223563;
+      const e2 = f * (2.0 - f);
+      const N = a / Math.sqrt(1.0 - e2 * Math.sin(rLat) ** 2);
+      return {
+        x: (N + h) * Math.cos(rLat) * Math.cos(rLng),
+        y: (N + h) * Math.cos(rLat) * Math.sin(rLng),
+        z: (N * (1.0 - e2) + h) * Math.sin(rLat)
+      };
+    }
+
+    function ecefToLocalMatrix(origin, originHeightM = 0) {
+      const lat = origin.lat * Math.PI / 180;
+      const lng = origin.lng * Math.PI / 180;
+      const sLat = Math.sin(lat);
+      const cLat = Math.cos(lat);
+      const sLng = Math.sin(lng);
+      const cLng = Math.cos(lng);
+      const east = { x: -sLng, y: cLng, z: 0 };
+      const north = { x: -sLat * cLng, y: -sLat * sLng, z: cLat };
+      const up = { x: cLat * cLng, y: cLat * sLng, z: sLat };
+      const originEcef = ecef(origin.lat, origin.lng, originHeightM);
+      const dot = (v) => v.x * originEcef.x + v.y * originEcef.y + v.z * originEcef.z;
+      const matrix = new THREE.Matrix4();
+
+      matrix.set(
+        east.x, east.y, east.z, -dot(east),
+        up.x, up.y, up.z, -dot(up),
+        -north.x, -north.y, -north.z, dot(north),
+        0, 0, 0, 1
+      );
+
+      return matrix;
+    }
+
+    function disposeActiveTiles() {
+      if (!activeTiles) return;
+      try { scene.remove(activeTiles.outerGroup); } catch (_error) {}
+      try { activeTiles.tiles.dispose(); } catch (_error) {}
+      activeTiles = null;
+    }
+
+    async function loadArea() {
+      const area = AREAS[areaSelect.value] || AREAS.tokyo;
+      const lodScale = Math.max(0.1, Math.min(1, Number(lodScaleInput.value) || 0.3));
+
+      loadButton.disabled = true;
+      setStatus("Resolving", "var(--warning)");
+      log(`${area.label} のPLATEAU配信URLを解決中...`);
+
+      try {
+        disposeActiveTiles();
+
+        const tileset = await resolveTileset(area);
+        log(`dataset: ${tileset.datasetName || "unknown"} / ${tileset.name || "unknown"}`);
+        log(`tileset: ${tileset.url}`);
+        sourceStatus.textContent = `PLATEAU ${tileset.muniCode}`;
+
+        setStatus("Loading", "var(--warning)");
+
+        const tiles = new TilesRenderer(tileset.url);
+        tiles.setCamera(camera);
+        tiles.setResolutionFromRenderer(camera, renderer);
+        if (tiles.setResolutionScale) tiles.setResolutionScale(lodScale);
+        if ("errorTarget" in tiles) tiles.errorTarget = 24;
+        if ("maxDepth" in tiles) tiles.maxDepth = 12;
+
+        const dracoLoader = new DRACOLoader();
+        dracoLoader.setDecoderPath(DRACO_DECODER_PATH);
+        tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader }));
+
+        const pivot = new THREE.Group();
+        pivot.matrixAutoUpdate = false;
+        pivot.matrix.copy(ecefToLocalMatrix(area, DEFAULT_GEOID_HEIGHT_M));
+        pivot.matrixWorldNeedsUpdate = true;
+        pivot.add(tiles.group);
+
+        const outerGroup = new THREE.Group();
+        outerGroup.position.y = DEFAULT_Y_OFFSET_M;
+        outerGroup.add(pivot);
+        scene.add(outerGroup);
+
+        tiles.addEventListener("load-tileset", () => {
+          setStatus("Streaming");
+          log("tileset.json を読み込みました。カメラを動かすと周辺タイルが順次読み込まれます。");
+        });
+
+        tiles.addEventListener("load-error", (event) => {
+          const message = event?.error?.message || "tile load error";
+          setStatus("Tile Error", "var(--danger)");
+          log(`タイル読み込みエラー: ${message}`);
+        });
+
+        activeTiles = { tiles, outerGroup };
+        controls.target.set(0, 25, 0);
+        camera.position.set(260, 280, 420);
+        controls.update();
+      } catch (error) {
+        setStatus("Error", "var(--danger)");
+        log(`読み込み失敗: ${error.message || error}`);
+      } finally {
+        loadButton.disabled = false;
+      }
+    }
+
+    window.addEventListener("resize", resize);
+    loadButton.addEventListener("click", loadArea);
+
+    resize();
+    animate();
+    log("Three.js 初期化完了。");
+  </script>
+</body>
+</html>

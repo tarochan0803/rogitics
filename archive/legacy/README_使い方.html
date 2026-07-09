@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LOGISTICS OS v8.2 ─ 使い方ガイド</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0
+    }
+
+    body {
+      font-family: 'Noto Sans JP', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 14px;
+      line-height: 1.7
+    }
+
+    a {
+      color: #38bdf8;
+      text-decoration: none
+    }
+
+    a:hover {
+      text-decoration: underline
+    }
+
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 40px 24px
+    }
+
+    .hero {
+      text-align: center;
+      padding: 48px 0 40px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 40px
+    }
+
+    .hero-badge {
+      display: inline-block;
+      background: rgba(14, 165, 233, 0.15);
+      border: 1px solid rgba(14, 165, 233, 0.4);
+      color: #38bdf8;
+      padding: 4px 14px;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      margin-bottom: 16px
+    }
+
+    .hero-title {
+      font-size: 32px;
+      font-weight: 900;
+      color: #f8fafc;
+      letter-spacing: 0.04em
+    }
+
+    .hero-sub {
+      font-size: 15px;
+      color: #94a3b8;
+      margin-top: 8px
+    }
+
+    .section {
+      margin-bottom: 40px
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #f1f5f9;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px
+    }
+
+    .section-title .num {
+      display: inline-flex;
+      width: 28px;
+      height: 28px;
+      background: #0ea5e9;
+      border-radius: 50%;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 900;
+      color: #fff;
+      flex-shrink: 0
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      padding: 20px 22px;
+      margin-bottom: 12px
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 8px
+    }
+
+    .card p {
+      color: #94a3b8;
+      font-size: 13px
+    }
+
+    .step {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 16px;
+      align-items: flex-start
+    }
+
+    .step-num {
+      min-width: 28px;
+      height: 28px;
+      background: rgba(14, 165, 233, 0.18);
+      border: 1px solid rgba(14, 165, 233, 0.4);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      color: #38bdf8;
+      flex-shrink: 0;
+      margin-top: 2px
+    }
+
+    .step-body {
+      flex: 1
+    }
+
+    .step-body strong {
+      color: #f1f5f9;
+      font-size: 13px
+    }
+
+    .step-body p {
+      color: #94a3b8;
+      font-size: 13px;
+      margin-top: 2px
+    }
+
+    code {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 12px;
+      font-family: Consolas, 'Courier New', monospace;
+      color: #7dd3fc
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 700
+    }
+
+    .tag.required {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #f87171
+    }
+
+    .tag.optional {
+      background: rgba(100, 116, 139, 0.2);
+      border: 1px solid rgba(100, 116, 139, 0.3);
+      color: #94a3b8
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      margin-top: 8px
+    }
+
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      color: #94a3b8;
+      font-weight: 700;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08)
+    }
+
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: #cbd5e1
+    }
+
+    tr:last-child td {
+      border-bottom: none
+    }
+
+    .note {
+      background: rgba(234, 179, 8, 0.08);
+      border: 1px solid rgba(234, 179, 8, 0.25);
+      border-radius: 8px;
+      padding: 12px 16px;
+      color: #fde68a;
+      font-size: 13px;
+      margin-top: 12px
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <div class="hero">
+      <div class="hero-badge">LOGISTICS OS v8.2</div>
+      <div class="hero-title">使い方ガイド</div>
+      <div class="hero-sub">搬入経路の安全性を自動判定するシステム</div>
+    </div>
+
+    <!-- ① 必要なもの -->
+    <div class="section">
+      <div class="section-title"><span class="num">1</span>必要なもの</div>
+
+      <table>
+        <tr>
+          <th>ソフトウェア</th>
+          <th>用途</th>
+          <th>種別</th>
+        </tr>
+        <tr>
+          <td><strong>Python 3.8以上</strong><br><a href="https://www.python.org/downloads/"
+              target="_blank">python.org/downloads</a></td>
+          <td>サーバー起動・各種処理</td>
+          <td><span class="tag required">必須</span></td>
+        </tr>
+        <tr>
+          <td><strong>Pythonパッケージ</strong><br>fastapi / uvicorn / ultralytics / Pillow / requests</td>
+          <td>AI解析サーバー（障害物検出）</td>
+          <td><span class="tag required">必須</span></td>
+        </tr>
+
+        <tr>
+          <td><strong>Google Maps APIキー</strong><br><a
+              href="https://developers.google.com/maps/documentation/javascript/get-api-key" target="_blank">取得方法</a>
+          </td>
+          <td>Street View・地図スナップショット</td>
+          <td><span class="tag optional">任意</span></td>
+        </tr>
+      </table>
+
+      <div class="note">
+        ⚠ Pythonインストール時は <strong>「Add Python to PATH」</strong>にチェックを入れてください。
+      </div>
+    </div>
+
+    <!-- ② セットアップ -->
+    <div class="section">
+      <div class="section-title"><span class="num">2</span>初回セットアップ（一度だけ）</div>
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong>Pythonをインストール</strong>
+          <p><a href="https://www.python.org/downloads/" target="_blank">python.org/downloads</a> からダウンロード。インストール時に
+            <code>Add Python to PATH</code> にチェック。
+          </p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong>「初回セットアップ.bat」をダブルクリック</strong>
+          <p>必要なPythonパッケージを自動インストールします。インターネット接続が必要です（数分かかる場合があります）。</p>
+        </div>
+      </div>
+
+
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <strong>「user_config.js」を編集（任意）</strong>
+          <p>Google Maps APIキーや使用するAIモデルを変更できます。メモ帳で開いて編集してください。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 起動方法 -->
+    <div class="section">
+      <div class="section-title"><span class="num">3</span>起動方法</div>
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong>「起動.bat」をダブルクリック</strong>
+          <p>AIサーバー（ポート8001）とWebサーバー（ポート8080）が自動起動し、ブラウザが開きます。</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong>ブラウザが自動で開かない場合</strong>
+          <p>手動でアクセス: <code>http://localhost:8080/index8.0.html</code></p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <strong>終了するには</strong>
+          <p>起動.batのウィンドウを閉じるか <code>Ctrl+C</code> を押します。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ④ 基本操作 -->
+    <div class="section">
+      <div class="section-title"><span class="num">4</span>基本操作</div>
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <strong>住所で地図を移動</strong>
+          <p>上部の検索ボックスに住所・施設名を入力して検索ボタンを押します。</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <strong>経路を設定</strong>
+          <p>地図上をクリックして搬入開始点・終点を2点追加します。クリックするたびに端点が追加され、経路が自動計算されます。</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <strong>「搬入判定を実行」ボタンをクリック</strong>
+          <p>道路幅・衝突・適合率を自動チェックし、スコアと判定結果を表示します。</p>
+        </div>
+      </div>
+
+
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <strong>「📄 レポート出力」で結果を保存</strong>
+          <p>判定結果をA4サイズのHTMLレポートとして出力し、印刷またはPDF保存できます。</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ⑤ ファイル構成 -->
+    <div class="section">
+      <div class="section-title"><span class="num">5</span>フォルダ構成</div>
+
+      <table>
+        <tr>
+          <th>ファイル</th>
+          <th>説明</th>
+        </tr>
+        <tr>
+          <td><code>起動.bat</code></td>
+          <td>ダブルクリックで起動（毎回使う）</td>
+        </tr>
+        <tr>
+          <td><code>初回セットアップ.bat</code></td>
+          <td>Pythonパッケージを一括インストール（初回のみ）</td>
+        </tr>
+        <tr>
+          <td><code>user_config.js</code></td>
+          <td>APIキー・AIモデル等の設定ファイル</td>
+        </tr>
+        <tr>
+          <td><code>index8.0.html</code></td>
+          <td>メインアプリ（ブラウザで開く画面）</td>
+        </tr>
+        <tr>
+          <td><code>server/app.py</code></td>
+          <td>YOLOサーバー（障害物検出・地図スナップ）</td>
+        </tr>
+        <tr>
+          <td><code>server/requirements.txt</code></td>
+          <td>Pythonパッケージリスト</td>
+        </tr>
+        <tr>
+          <td><code>README_使い方.html</code></td>
+          <td>このファイル</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- ⑥ トラブルシューティング -->
+    <div class="section">
+      <div class="section-title"><span class="num">6</span>トラブルシューティング</div>
+
+      <div class="card">
+        <div class="card-title">地図が表示されない</div>
+        <p>起動.batのウィンドウが開いていることを確認してください。ウィンドウを閉じるとサーバーが停止します。</p>
+      </div>
+
+
+
+      <div class="card">
+        <div class="card-title">Street Viewが表示されない</div>
+        <p>Google Maps APIキーが必要です。<code>user_config.js</code> の <code>googleMapsApiKey</code> に有効なキーを設定してください。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">障害物検出が動かない</div>
+        <p>起動.batでYOLOサーバー（ポート8001）が起動していることを確認してください。「初回セットアップ.bat」でパッケージがインストールされているか確認します。</p>
+      </div>
+    </div>
+
+    <div
+      style="text-align:center;padding:32px 0;color:#475569;font-size:12px;border-top:1px solid rgba(255,255,255,0.06);margin-top:20px">
+      LOGISTICS OS v8.2
+    </div>
+
+  </div>
+</body>
+
+</html>

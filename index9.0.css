@@ -1,0 +1,1745 @@
+/* LOGISTICS OS v9.0 command-workbench skin.
+   IDs stay unchanged so the existing route, YOLO, 3D, and assessment pipeline
+   keeps running. */
+
+body.index9 {
+  /* Linear/Vercel 風 洗練ダーク: ニュートラルな黒基調 + indigo 単一アクセント */
+  --wb-shell: #08080a;
+  --wb-panel: rgba(17, 17, 20, 0.96);
+  --wb-panel-2: rgba(24, 24, 28, 0.98);
+  --wb-field: rgba(255, 255, 255, 0.038);
+  --wb-line: rgba(255, 255, 255, 0.08);
+  --wb-line-strong: rgba(129, 140, 248, 0.45);
+  --wb-text: #f7f8f8;
+  --wb-muted: #9ca3af;
+  --wb-dim: #6b7280;
+  --wb-cyan: #818cf8;
+  --wb-teal: #6366f1;
+  --wb-accent: #6366f1;
+  --wb-accent-hi: #818cf8;
+  --wb-amber: #f59e0b;
+  --wb-green: #22c55e;
+  --wb-red: #ef4444;
+  --wb-shadow: 0 4px 24px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
+  --wb-radius: 10px;
+  --wb-radius-sm: 7px;
+  --wb-sidebar: 340px;
+  --wb-gap: 20px;
+  background: var(--wb-shell);
+  color: var(--wb-text);
+  font-family: -apple-system, BlinkMacSystemFont, Inter, "Noto Sans JP", system-ui, sans-serif;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body.index9 * {
+  letter-spacing: -0.011em;
+}
+
+body.index9 #map {
+  background: #121212;
+}
+
+body.index9 #map::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 420;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 0 150px rgba(0, 0, 0, 0.34);
+}
+
+body.index9 .leaflet-control-container .leaflet-control,
+body.index9 .leaflet-bar a {
+  border-radius: 6px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(13, 16, 20, 0.92);
+  color: var(--wb-text);
+}
+
+body.index9 #sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--wb-sidebar);
+  z-index: 5200;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(9, 10, 12, 0.98), rgba(17, 19, 23, 0.96)),
+    var(--wb-panel);
+  border-right: 1px solid var(--wb-line);
+  box-shadow: 20px 0 54px rgba(0, 0, 0, 0.42);
+}
+
+body.index9 #sidebarBrand {
+  height: 76px;
+  padding: 0 22px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--wb-line);
+  font-size: 21px;
+  font-weight: 900;
+  letter-spacing: 0;
+  color: #ffffff;
+}
+
+body.index9 #sidebarBrand::before {
+  content: "";
+  width: 7px;
+  height: 32px;
+  margin-right: 12px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--wb-teal), var(--wb-amber));
+}
+
+body.index9 #sidebarBrand .accent {
+  color: var(--wb-teal);
+}
+
+body.index9 #sidebarBrand .sb-version {
+  margin-left: auto;
+  padding: 4px 7px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  border-radius: 5px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+body.index9 #sidebarContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+body.index9 #serverPanel,
+body.index9 #floatSearch,
+body.index9 #hud .hud-card,
+body.index9 #workflowDock,
+body.index9 .sp-section,
+body.index9 #resultPanel,
+body.index9 #deliveryProgress,
+body.index9 #mapGuide,
+body.index9 .result-chip,
+body.index9 .vehicle-sweep-tabs,
+body.index9 #statusLine {
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  box-shadow: none;
+  backdrop-filter: blur(14px);
+}
+
+body.index9 #serverPanel,
+body.index9 #floatSearch {
+  padding: 12px;
+}
+
+body.index9 #serverPanel {
+  order: 1;
+}
+
+body.index9 #floatSearch {
+  order: 2;
+}
+
+body.index9 #hud {
+  order: 3;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+body.index9 #workflowDock {
+  order: 4;
+  padding: 12px;
+}
+
+body.index9 #workflowDock.collapsed .wf-list,
+body.index9 #workflowDock.collapsed .wf-hint,
+body.index9 #workflowDock.collapsed .wf-step-actions {
+  display: none !important;
+}
+
+body.index9 .op-guide {
+  order: 5;
+}
+
+body.index9 .srv-header,
+body.index9 .wf-head,
+body.index9 .rp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+body.index9 .srv-title,
+body.index9 .hud-label,
+body.index9 .wf-head strong {
+  color: var(--wb-dim);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+body.index9 .srv-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+body.index9 .srv-dot {
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.12);
+}
+
+/* SERVERS: カード装飾をやめてインジケーター（ドット+状態）だけにする */
+body.index9 #serverPanel {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 2px 4px !important;
+}
+body.index9 #serverPanel .srv-header,
+body.index9 #serverPanel #srvStartYolo {
+  display: none !important;
+}
+body.index9 #serverPanel .srv-row {
+  min-height: 0 !important;
+  grid-template-columns: auto auto 1fr !important;
+  gap: 7px !important;
+}
+body.index9 #serverPanel .srv-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--wb-muted);
+}
+
+body.index9 .fs-row,
+body.index9 .fs-convert-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+body.index9 #floatSearch summary,
+body.index9 .sp-section summary,
+body.index9 .sp-sub-details summary {
+  cursor: pointer;
+  color: var(--wb-muted);
+  font-weight: 800;
+}
+
+body.index9 #hud .hud-card {
+  position: relative;
+  min-height: 78px;
+  padding: 14px 15px;
+  overflow: hidden;
+}
+
+body.index9 #hud .hud-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--wb-teal);
+}
+
+body.index9 .hud-val {
+  margin-top: 8px;
+  color: #ffffff;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+body.index9 .hud-sub {
+  margin-top: 3px;
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+
+body.index9 .wf-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+body.index9 .wf-item {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+body.index9 .wf-item.active {
+  border-color: rgba(45, 212, 191, 0.42);
+  background: rgba(45, 212, 191, 0.09);
+}
+
+body.index9 .wf-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+body.index9 .wf-item.active .wf-dot {
+  background: var(--wb-teal);
+  color: #031312;
+}
+
+body.index9 .wf-label,
+body.index9 .wf-state {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+body.index9 .wf-state {
+  color: var(--wb-muted);
+}
+
+body.index9 .wf-hint {
+  margin-top: 10px;
+  color: var(--wb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+body.index9 .wf-step-actions {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+body.index9 .wf-step-actions[hidden],
+body.index9 .wf-step-actions .is-hidden,
+body.index9 .wf-step-actions [hidden] {
+  display: none !important;
+}
+
+body.index9 .wf-primary-action {
+  min-height: 42px;
+  justify-content: center;
+  border-color: rgba(45, 212, 191, 0.48);
+  background: linear-gradient(135deg, rgba(45, 212, 191, 0.22), rgba(245, 158, 11, 0.18));
+  color: #fff;
+}
+
+body.index9 .wf-secondary-actions,
+body.index9 .wf-vehicle-actions {
+  display: grid;
+  gap: 6px;
+}
+
+body.index9 .wf-secondary-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+body.index9 .wf-vehicle-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+body.index9 .wf-secondary-actions .ctrl-btn,
+body.index9 .wf-vehicle-actions .ctrl-btn {
+  min-height: 32px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+body.index9 #wfVehicleActions .ctrl-btn.active {
+  border-color: var(--wb-line-strong);
+  background: rgba(45, 212, 191, 0.16);
+  color: #fff;
+  box-shadow: inset 0 -2px 0 var(--wb-teal);
+}
+
+body.index9 #topBar {
+  position: fixed;
+  top: 16px !important;
+  left: calc(var(--wb-sidebar) + var(--wb-gap)) !important;
+  right: var(--wb-gap) !important;
+  height: auto !important;
+  min-height: 112px;
+  z-index: 5100;
+  display: grid;
+  grid-template-columns: minmax(270px, 1fr) auto;
+  grid-template-areas:
+    "vehicles actions"
+    "skill primary";
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--wb-line);
+  background: rgba(10, 12, 15, 0.86);
+  box-shadow: var(--wb-shadow);
+  backdrop-filter: blur(16px);
+}
+
+body.index9 .top-vehicle-wrapper {
+  grid-area: vehicles;
+  min-width: 0;
+}
+
+body.index9 .top-skill {
+  grid-area: skill;
+  width: 100%;
+  height: 44px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+body.index9 .top-primary-actions {
+  grid-area: primary;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+body.index9 .top-actions {
+  grid-area: actions;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 7px;
+}
+
+body.index9 .veh-cards {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(54px, 1fr));
+  gap: 7px;
+}
+
+body.index9 .veh-card {
+  min-width: 0;
+  height: 54px;
+  padding: 6px 5px;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+  color: var(--wb-text);
+  background: rgba(255, 255, 255, 0.055);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+body.index9 .veh-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(34, 211, 238, 0.42);
+}
+
+body.index9 .veh-card.active {
+  border-color: var(--wb-line-strong);
+  background: rgba(45, 212, 191, 0.15);
+  box-shadow: inset 0 -3px 0 var(--wb-teal);
+}
+
+body.index9 .veh-icon {
+  color: var(--wb-amber);
+}
+
+body.index9 .vc-name {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+body.index9 .vc-spec {
+  color: var(--wb-muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+body.index9 .top-skill-label,
+body.index9 .top-skill-val {
+  color: var(--wb-muted);
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+body.index9 .top-skill-val {
+  color: var(--wb-amber);
+}
+
+body.index9 .top-skill-range,
+body.index9 .ctrl-range {
+  accent-color: var(--wb-teal);
+}
+
+body.index9 .top-primary-actions .ctrl-btn,
+body.index9 .top-primary-actions .assess-action-btn {
+  min-width: 126px;
+  height: 44px;
+}
+
+body.index9 #topBar #topRefreshData,
+body.index9 #topBar #runDeliveryAssessment {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body.index9 #topBar #topRefreshData {
+  min-width: 132px;
+}
+
+body.index9 #topBar #runDeliveryAssessment {
+  min-width: 198px;
+}
+
+body.index9 .assess-action-btn {
+  min-width: 190px;
+  border: 0;
+  border-radius: 7px;
+  color: #06130f;
+  background: linear-gradient(135deg, var(--wb-amber), var(--wb-green));
+  box-shadow: 0 12px 32px rgba(245, 158, 11, 0.22);
+  font-weight: 900;
+}
+
+body.index9 .top-road-btn {
+  border-color: rgba(45, 212, 191, 0.34);
+}
+
+body.index9 .top-actions .ctrl-btn {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  justify-content: center;
+  overflow: hidden;
+}
+
+body.index9 #topBar .top-actions .ctrl-btn {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body.index9 .top-actions .ctrl-btn:not(.icon) {
+  font-size: 0 !important;
+}
+
+/* AF/DR は上級設定へ移動済み。topBar内に残っていた場合のみ短縮ラベルを表示 */
+body.index9 .top-actions #autoFollowBtn::before {
+  content: "AF";
+  font-size: 11px;
+  font-weight: 900;
+}
+
+body.index9 #open3DTop::before {
+  content: "3D";
+  font-size: 11px;
+  font-weight: 900;
+}
+
+body.index9 .ctrl-input,
+body.index9 .ctrl-btn,
+body.index9 .assess-action-btn {
+  border-radius: 6px;
+  font-family: inherit;
+}
+
+body.index9 .ctrl-input {
+  min-height: 36px;
+  border: 1px solid var(--wb-line);
+  background: rgba(255, 255, 255, 0.065);
+  color: var(--wb-text);
+}
+
+body.index9 .ctrl-input:focus {
+  border-color: var(--wb-line-strong);
+  outline: 2px solid rgba(45, 212, 191, 0.12);
+}
+
+body.index9 .ctrl-btn {
+  border: 1px solid var(--wb-line);
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--wb-text);
+  font-weight: 900;
+}
+
+body.index9 .ctrl-btn:hover {
+  border-color: rgba(34, 211, 238, 0.38);
+  background: rgba(34, 211, 238, 0.09);
+}
+
+body.index9 .ctrl-btn.accent {
+  border-color: rgba(45, 212, 191, 0.45);
+  background: rgba(45, 212, 191, 0.16);
+}
+
+body.index9 .ctrl-btn.danger-ghost {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+body.index9 #sidePanel {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  bottom: 18px;
+  width: 410px;
+  z-index: 6200;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-panel-2);
+  box-shadow: -22px 0 58px rgba(0, 0, 0, 0.48);
+  transform: translateX(calc(100% + 28px));
+  overflow: hidden;
+}
+
+body.index9 #sidePanel.open {
+  transform: translateX(0);
+}
+
+body.index9 .sp-header {
+  height: 62px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--wb-line);
+  color: var(--wb-teal);
+  font-weight: 900;
+}
+
+body.index9 .sp-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  min-height: 46px;
+  border-bottom: 1px solid var(--wb-line);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+body.index9 .sp-tab {
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--wb-muted);
+  font-weight: 900;
+}
+
+body.index9 .sp-tab[aria-selected="true"] {
+  color: #fff;
+  border-bottom-color: var(--wb-amber);
+}
+
+body.index9 .sp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+body.index9 .sp-section {
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+body.index9 .sp-section > summary {
+  padding: 12px 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+body.index9 .sp-inner {
+  padding: 12px;
+  display: grid;
+  gap: 9px;
+}
+
+body.index9 .sp-field {
+  display: grid;
+  gap: 5px;
+  color: var(--wb-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+body.index9 .sp-grid2,
+body.index9 .sp-grid3 {
+  display: grid;
+  gap: 8px;
+}
+
+body.index9 .sp-grid2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.index9 .sp-grid3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+body.index9 .sp-meta,
+body.index9 .sp-stats {
+  color: var(--wb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+body.index9 #mapGuide {
+  left: calc(var(--wb-sidebar) + ((100vw - var(--wb-sidebar)) / 2));
+  right: auto;
+  bottom: 20px;
+  transform: translateX(-50%);
+  max-width: min(680px, calc(100vw - var(--wb-sidebar) - 60px));
+  padding: 12px 16px;
+  color: var(--wb-text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+body.index9 #statusLine {
+  left: calc(var(--wb-sidebar) + var(--wb-gap));
+  bottom: 20px;
+  max-width: 360px;
+  padding: 9px 12px;
+  color: var(--wb-muted);
+  font-size: 12px;
+}
+
+body.index9 .result-chip {
+  left: calc(var(--wb-sidebar) + var(--wb-gap));
+  bottom: 72px;
+  min-width: 330px;
+  padding: 10px 12px;
+  gap: 12px;
+  border-radius: 8px;
+}
+
+body.index9 .vehicle-sweep-tabs {
+  left: calc(var(--wb-sidebar) + var(--wb-gap));
+  bottom: 142px;
+  padding: 8px;
+  gap: 6px;
+}
+
+body.index9 .vst-btn {
+  min-height: 30px;
+  border-radius: 5px;
+  border: 1px solid var(--wb-line);
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--wb-text);
+  font-weight: 900;
+}
+
+body.index9 #resultPanel {
+  position: fixed;
+  left: calc(var(--wb-sidebar) + var(--wb-gap));
+  bottom: 20px;
+  width: min(470px, calc(100vw - var(--wb-sidebar) - 44px));
+  max-height: min(76vh, 720px);
+  z-index: 6100;
+  overflow: hidden;
+}
+
+body.index9 .rp-header {
+  min-height: 52px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--wb-line);
+}
+
+body.index9 .rp-body {
+  max-height: calc(76vh - 52px);
+  overflow-y: auto;
+  padding: 14px;
+}
+
+body.index9 .rp-score-row {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  gap: 14px;
+  align-items: center;
+}
+
+body.index9 .rp-ring {
+  width: 82px;
+  height: 82px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(45, 212, 191, 0.38);
+  background: rgba(45, 212, 191, 0.08);
+  font-size: 22px;
+  font-weight: 900;
+}
+
+body.index9 .rp-badge,
+body.index9 .chip-badge {
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+body.index9 #deliveryProgress {
+  left: calc(var(--wb-sidebar) + ((100vw - var(--wb-sidebar)) / 2));
+  bottom: 74px;
+  transform: translateX(-50%);
+  width: min(520px, calc(100vw - var(--wb-sidebar) - 80px));
+  padding: 14px 16px;
+  border-color: rgba(245, 158, 11, 0.46);
+  z-index: 6500;
+}
+
+body.index9 .thud-progress-text {
+  color: #fff;
+  font-weight: 900;
+}
+
+body.index9 .thud-progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+body.index9 .thud-progress-fill {
+  background: linear-gradient(90deg, var(--wb-teal), var(--wb-amber));
+}
+
+body.index9 #toast {
+  right: 22px;
+  bottom: 22px;
+  z-index: 8000;
+}
+
+body.index9 .toast-item {
+  max-width: 420px;
+  padding: 12px 14px;
+  border: 1px solid rgba(45, 212, 191, 0.38);
+  border-radius: 8px;
+  background: rgba(8, 10, 12, 0.96);
+  color: var(--wb-text);
+  box-shadow: var(--wb-shadow);
+}
+
+body.index9 .panel-peek-btn {
+  border-radius: 6px;
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-line);
+  color: var(--wb-text);
+}
+
+body.index9 #driveHud {
+  border-radius: 8px;
+  border: 1px solid var(--wb-line);
+  background: rgba(8, 10, 12, 0.93);
+}
+
+body.index9 #map3dWrap.open {
+  border: 1px solid rgba(45, 212, 191, 0.42);
+  border-radius: 8px !important;
+  background: rgba(8, 10, 12, 0.98) !important;
+  box-shadow: var(--wb-shadow);
+}
+
+body.index9 #map3dPanel {
+  border-radius: 8px;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-panel-2);
+}
+
+body.index9 #map3d,
+body.index9 #three3dCanvas {
+  background: #0b0d10;
+}
+
+body.index9 :focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.7);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1180px) {
+  body.index9 {
+    --wb-sidebar: 306px;
+    --wb-gap: 12px;
+  }
+
+  body.index9 #topBar {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "vehicles"
+      "primary"
+      "skill"
+      "actions";
+  }
+
+  body.index9 .top-primary-actions,
+  body.index9 .top-actions {
+    justify-content: stretch;
+  }
+
+  body.index9 .top-primary-actions > * {
+    flex: 1;
+  }
+}
+
+@media (max-width: 760px) {
+  body.index9 {
+    --wb-sidebar: 100vw;
+    --wb-gap: 8px;
+  }
+
+  body.index9 #sidebar {
+    height: 39vh;
+    width: 100vw;
+    border-right: 0;
+    border-bottom: 1px solid var(--wb-line);
+  }
+
+  body.index9 #sidebarBrand {
+    height: 50px;
+  }
+
+  body.index9 #topBar {
+    left: 8px !important;
+    right: 8px !important;
+    top: calc(39vh + 8px) !important;
+    min-height: 0;
+  }
+
+  body.index9 .veh-cards {
+    grid-template-columns: repeat(5, minmax(44px, 1fr));
+  }
+
+  body.index9 .veh-card {
+    height: 48px;
+  }
+
+  body.index9 .vc-spec,
+  body.index9 .top-skill-label {
+    display: none;
+  }
+
+  body.index9 #sidePanel {
+    inset: 8px;
+    width: auto;
+  }
+
+  body.index9 #mapGuide,
+  body.index9 #deliveryProgress {
+    left: 50%;
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+
+  body.index9 #statusLine,
+  body.index9 .result-chip,
+  body.index9 .vehicle-sweep-tabs,
+  body.index9 #resultPanel {
+    left: 8px;
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+}
+
+/* =========================================================================
+   Linear/Vercel 洗練レイヤー（末尾で上書き）
+   - 繊細な1px境界・控えめな影・indigo単色アクセント・余白と字形の統一
+   ========================================================================= */
+
+/* パネル類: フラット + 繊細な境界。過剰な影/グラデを抑える */
+body.index9 #sidebar,
+body.index9 #sidePanel,
+body.index9 #resultPanel,
+body.index9 #topBar,
+body.index9 #workflowDock,
+body.index9 #hud .hud-card,
+body.index9 #map3dWrap {
+  border: 1px solid var(--wb-line);
+  box-shadow: var(--wb-shadow);
+  background: var(--wb-panel);
+  backdrop-filter: blur(12px) saturate(1.05);
+  -webkit-backdrop-filter: blur(12px) saturate(1.05);
+}
+
+/* 見出し・ブランド: 字間を詰めて上質に */
+body.index9 #sidebarBrand,
+body.index9 .wf-head strong,
+body.index9 .sp-header,
+body.index9 .rp-header {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+/* ボタン共通: 角丸を控えめに、トランジションを繊細に、影は最小 */
+body.index9 .ctrl-btn,
+body.index9 .veh-card,
+body.index9 .sp-tab,
+body.index9 .cargo-place-btn,
+body.index9 .vst-btn,
+body.index9 .top-actions .ctrl-btn {
+  border-radius: var(--wb-radius-sm);
+  border: 1px solid var(--wb-line);
+  background: var(--wb-field);
+  color: var(--wb-text);
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, transform 0.14s ease;
+  box-shadow: none;
+}
+body.index9 .ctrl-btn:hover,
+body.index9 .veh-card:hover,
+body.index9 .top-actions .ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+/* アクティブ/アクセント: indigo 単色、glow なしの締まった見た目 */
+body.index9 .veh-card.active,
+body.index9 .sp-tab[aria-selected="true"],
+body.index9 .cargo-place-btn.active {
+  border-color: var(--wb-accent);
+  background: rgba(99, 102, 241, 0.14);
+  color: var(--wb-accent-hi);
+  box-shadow: none;
+}
+
+/* 主要実行ボタン（搬入判定）: indigo 塗りのソリッド、控えめなホバー */
+body.index9 .assess-action-btn,
+body.index9 .top-primary-actions .assess-action-btn {
+  background: var(--wb-accent);
+  border: 1px solid var(--wb-accent);
+  color: #fff;
+  border-radius: var(--wb-radius-sm);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+body.index9 .assess-action-btn:hover,
+body.index9 .top-primary-actions .assess-action-btn:hover {
+  background: #717bf4;
+  transform: translateY(-1px);
+}
+
+/* 入力: 繊細な境界、フォーカスで indigo リング */
+body.index9 .ctrl-input,
+body.index9 .ctrl-input:focus {
+  border-radius: var(--wb-radius-sm);
+  border: 1px solid var(--wb-line);
+  background: var(--wb-field);
+  color: var(--wb-text);
+}
+body.index9 .ctrl-input:focus {
+  outline: none;
+  border-color: var(--wb-accent);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18);
+}
+
+/* カード/セクション: 角丸統一、内側ハイライトで奥行きを薄く */
+body.index9 .sp-section,
+body.index9 .hud-card,
+body.index9 .wf-item,
+body.index9 .detail-item {
+  border-radius: var(--wb-radius);
+  border: 1px solid var(--wb-line);
+}
+
+/* ワークフローのアクティブドット: indigo */
+body.index9 .wf-item.active .wf-dot,
+body.index9 .srv-dot.online {
+  background: var(--wb-accent);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.16);
+}
+
+/* 区切り線・スクロールバーを繊細に */
+body.index9 ::-webkit-scrollbar { width: 8px; height: 8px; }
+body.index9 ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+body.index9 ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
+
+/* フォーカスリングを indigo に統一 */
+body.index9 button:focus-visible,
+body.index9 a:focus-visible,
+body.index9 input:focus-visible {
+  outline: 2px solid var(--wb-accent-hi);
+  outline-offset: 2px;
+}
+
+/* 地図上の経路色は橙のままだが、UIクロムのネオン感を抑える */
+body.index9 #map::after {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
+    inset 0 0 120px rgba(0, 0, 0, 0.28);
+}
+
+/* =========================================================================
+   Linear 洗練レイヤー 2: サイドバー/ステータス/ワークフロー/上部バーの締め
+   ========================================================================= */
+
+/* サイドバー全体: 余白を整え、間延びを解消 */
+body.index9 #sidebar { padding: 0; }
+body.index9 #sidebarContent {
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+body.index9 #sidebarBrand {
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--wb-line);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+body.index9 #sidebarBrand .sb-version {
+  font-size: 10px;
+  color: var(--wb-dim);
+  font-weight: 500;
+}
+
+/* ステータスカード（FEASIBILITY/COLLISION/ROAD WIDTH）: 左アクセントバー + 階層 */
+body.index9 #hud { display: flex; flex-direction: column; gap: 8px; }
+/* HUDカード（FEASIBILITY / COLLISION / ROAD WIDTH）は不要のため全て非表示 */
+body.index9 #hud,
+body.index9 #hudFeasCard,
+body.index9 #hudCollisionCard,
+body.index9 #hudWidthCard { display: none !important; }
+/* 上部バーの「Light（テーマ切替）」ボタンは不要のため非表示 */
+body.index9 #toggleTheme { display: none !important; }
+/* 旧ステータス行（左下に英語テキストが裏で残る）は不要のため非表示。
+   ※ hasRoads() は textContent を参照するため display:none でも判定は維持される */
+body.index9 #statusLine { display: none !important; }
+/* 「リセット」ボタンを大きく（押しやすく目立たせる） */
+body.index9 #topBar .top-actions #full-reset {
+  width: 52px !important;
+  min-width: 52px !important;
+  height: 52px !important;
+  min-height: 52px !important;
+  border-radius: 12px !important;
+}
+body.index9 #topBar .top-actions #full-reset svg {
+  width: 24px !important;
+  height: 24px !important;
+}
+body.index9 #hud .hud-card {
+  position: relative;
+  padding: 11px 13px 11px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-panel-2);
+  overflow: hidden;
+}
+body.index9 #hud .hud-card::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--wb-accent);
+  opacity: 0.85;
+}
+body.index9 #hud .hud-card .hud-label,
+body.index9 #hud .hud-card > div:first-child {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--wb-dim);
+}
+body.index9 .hud-val {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--wb-text);
+  margin-top: 2px;
+}
+body.index9 .hud-sub {
+  font-size: 11px;
+  color: var(--wb-muted);
+  margin-top: 1px;
+}
+
+/* ワークフロー: コンパクト + アクティブ step を indigo で明確に */
+body.index9 .wf-list { gap: 4px; }
+body.index9 .wf-item {
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  gap: 10px;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+body.index9 .wf-item.active {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.35);
+}
+body.index9 .wf-dot {
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--wb-field);
+  color: var(--wb-muted);
+  border: 1px solid var(--wb-line);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+body.index9 .wf-item.active .wf-dot {
+  background: var(--wb-accent);
+  color: #fff;
+  border-color: var(--wb-accent);
+  box-shadow: none;
+}
+body.index9 .wf-item.done .wf-dot {
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--wb-green);
+  border-color: rgba(34, 197, 94, 0.4);
+}
+body.index9 .wf-state { font-size: 10.5px; color: var(--wb-dim); }
+
+/* セクション見出し（DRIVERS / WORKFLOW など小見出し）の質感 */
+body.index9 #sidebarContent > div > .sp-meta,
+body.index9 .wf-head strong {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--wb-dim);
+  font-weight: 600;
+}
+
+/* 上部バー: 高さと余白を締め、要素間を均一に */
+body.index9 #topBar {
+  padding: 0 16px;
+  gap: 16px;
+  border-bottom: 1px solid var(--wb-line);
+  background: var(--wb-panel);
+}
+body.index9 .veh-card {
+  min-width: 52px;
+  padding: 7px 10px;
+  border-radius: 8px;
+}
+body.index9 .vc-name { font-size: 13px; font-weight: 650; letter-spacing: -0.01em; }
+body.index9 .vc-spec { font-size: 9.5px; color: var(--wb-dim); }
+
+/* 検索/入力: プレースホルダを淡く */
+body.index9 .ctrl-input::placeholder { color: var(--wb-dim); }
+
+/* 区切り見出しの下に薄い線でリズムを作る */
+body.index9 .sp-section > summary {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 11px 12px;
+}
+
+/* =========================================================================
+   没入型フルマップ — 地図を全面に、操作系を浮遊ガラスパネル化
+   ========================================================================= */
+
+/* 地図は画面全面（サイドバーの下にも地図が広がる） */
+body.index9 #map {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0;
+}
+
+/* サイドバー: 全幅トップバーの下に浮くガラスカード（左の縦の帯） */
+body.index9 #sidebar {
+  inset: 90px auto 16px 16px !important;
+  width: 300px !important;
+  max-height: calc(100vh - 106px);
+  border-radius: 16px !important;
+  border: 1px solid var(--wb-line) !important;
+  border-right: 1px solid var(--wb-line) !important;
+  background: rgba(12, 13, 17, 0.66) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: blur(24px) saturate(1.15);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.55) !important;
+  overflow: hidden;
+}
+body.index9 #sidebarContent {
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+/* 上部バー: 背景バーを廃止し、ボタンだけが地図上に直接浮く形に */
+body.index9 #topBar {
+  left: 16px !important;
+  right: 16px !important;
+  top: 14px !important;
+  min-height: auto !important;
+  border-radius: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+/* 設定パネルは引き続き右からスライドイン（浮遊ガラス） */
+body.index9 #sidePanel {
+  border-radius: 16px 0 0 16px !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: blur(24px) saturate(1.15);
+  background: rgba(12, 13, 17, 0.82) !important;
+}
+
+/* 結果パネル / ガイド / ステータス: 浮遊ガラスで地図に溶け込ませる */
+body.index9 #resultPanel,
+body.index9 .result-chip,
+body.index9 #mapGuide,
+body.index9 #statusLine {
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+  backdrop-filter: blur(20px) saturate(1.1);
+  background: rgba(12, 13, 17, 0.72) !important;
+  border: 1px solid var(--wb-line) !important;
+  border-radius: 14px !important;
+  box-shadow: var(--wb-shadow) !important;
+}
+
+/* 3Dミニビュー: 右下に浮遊（既存位置を尊重しつつ角丸とガラス感） */
+body.index9 #map3dWrap {
+  border-radius: 16px !important;
+  border: 1px solid var(--wb-line) !important;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* サイドバー内の各パネルは枠なしフラットに（カードの二重枠を防ぐ） */
+body.index9 #sidebar #hud .hud-card {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+/* 浮遊化に伴い、ロゴ下線とサイドバー上端の角丸を整える */
+body.index9 #sidebarBrand {
+  border-radius: 16px 16px 0 0;
+}
+
+/* =========================================================================
+   ボタン全面刷新（既存の高詳細度ルールを !important で確実に上書き）
+   ========================================================================= */
+
+/* 主役: 搬入判定を実行 — indigo ソリッド（cyanグラデ廃止） */
+body.index9 #topBar .assess-action-btn,
+body.index9 .top-primary-actions .assess-action-btn,
+body.index9 .assess-action-btn {
+  background: var(--wb-accent) !important;
+  border: 1px solid var(--wb-accent) !important;
+  color: #fff !important;
+  border-radius: 11px !important;
+  font-weight: 650 !important;
+  font-size: 13.5px !important;
+  letter-spacing: -0.01em !important;
+  padding: 0 20px !important;
+  min-height: 44px !important;
+  box-shadow: 0 2px 14px rgba(99, 102, 241, 0.38) !important;
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease !important;
+}
+body.index9 .assess-action-btn:hover {
+  background: #757ef5 !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 22px rgba(99, 102, 241, 0.55) !important;
+}
+body.index9 .assess-action-btn svg { stroke: #fff !important; }
+
+/* セカンダリ: 道路取得 — 枠線スタイル */
+body.index9 #topBar .top-road-btn,
+body.index9 .top-road-btn {
+  background: var(--wb-field) !important;
+  border: 1px solid var(--wb-line) !important;
+  color: var(--wb-text) !important;
+  border-radius: 11px !important;
+  min-height: 44px !important;
+  padding: 0 16px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  box-shadow: none !important;
+  transition: background 0.14s ease, border-color 0.14s ease !important;
+}
+body.index9 .top-road-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: var(--wb-line-strong) !important;
+}
+
+/* ツールボタン群: AF / DR / 3D / 設定 / Light / リセット — ピルトグル */
+body.index9 #topBar .top-actions .ctrl-btn,
+body.index9 .top-actions .ctrl-btn {
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 13px !important;
+  border-radius: 9px !important;
+  background: var(--wb-field) !important;
+  border: 1px solid var(--wb-line) !important;
+  color: var(--wb-muted) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease !important;
+}
+body.index9 .top-actions .ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--wb-text) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+body.index9 .top-actions .ctrl-btn.active {
+  background: rgba(99, 102, 241, 0.16) !important;
+  border-color: var(--wb-accent) !important;
+  color: var(--wb-accent-hi) !important;
+}
+body.index9 .top-actions .ctrl-btn svg { width: 15px; height: 15px; }
+
+/* 車両カード: 未選択は繊細、選択は indigo の塗り */
+body.index9 .veh-cards .veh-card {
+  border-radius: 11px !important;
+  border: 1px solid var(--wb-line) !important;
+  background: var(--wb-field) !important;
+  padding: 8px 12px !important;
+  transition: background 0.14s ease, border-color 0.14s ease, transform 0.14s ease !important;
+  box-shadow: none !important;
+}
+body.index9 .veh-cards .veh-card:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  transform: translateY(-1px) !important;
+}
+body.index9 .veh-cards .veh-card.active {
+  background: rgba(99, 102, 241, 0.18) !important;
+  border-color: var(--wb-accent) !important;
+  box-shadow: inset 0 0 0 1px var(--wb-accent) !important;
+}
+body.index9 .veh-card.active .vc-name { color: var(--wb-accent-hi) !important; }
+
+/* 設定パネル内ボタン・タブも同系統で統一 */
+body.index9 .sp-inner .ctrl-btn {
+  border-radius: 9px !important;
+  border: 1px solid var(--wb-line) !important;
+  background: var(--wb-field) !important;
+  color: var(--wb-text) !important;
+  box-shadow: none !important;
+  transition: background 0.14s ease, border-color 0.14s ease !important;
+}
+body.index9 .sp-inner .ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+body.index9 .sp-inner .ctrl-btn.accent {
+  background: var(--wb-accent) !important;
+  border-color: var(--wb-accent) !important;
+  color: #fff !important;
+}
+
+/* 運転技術スライダーのつまみを indigo に */
+body.index9 .ctrl-range { accent-color: var(--wb-accent); }
+
+/* =========================================================================
+   ボタン重なり修正 — 上部ツールバーを横並び nowrap で確実に整列
+   ========================================================================= */
+
+/* 上部バー: 1段の横並びに固定（折り返しで下へ伸びてサイドバーと重なるのを防ぐ） */
+body.index9 #topBar {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 12px !important;
+  grid-template-columns: none !important;
+  grid-template-areas: none !important;
+  overflow-x: auto !important; /* 万一狭くて入り切らない場合は横スクロールで吸収 */
+}
+body.index9 .top-vehicle-wrapper {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  flex: 0 0 auto !important;
+}
+body.index9 .top-skill {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex: 0 1 auto !important;
+  width: auto !important; /* 旧グリッド定義の width:100% を打ち消す（横幅占有→他を押し出す元凶） */
+  min-width: 0 !important;
+  white-space: nowrap !important;
+}
+/* スライダー本体も伸びすぎないよう上限を設ける */
+body.index9 .top-skill .top-skill-range {
+  width: 110px !important;
+  max-width: 110px !important;
+  min-width: 60px !important;
+}
+/* 背景の二重化を解消: トップバー内のグループ枠/背景/影をすべて消す。
+   ※ style6.css / index8.2.css の `#topBar>*`（ID入り+!important で濃紺背景）を
+     上回る詳細度（body.index9 #topBar > *）で確実に打ち消す。 */
+body.index9 #topBar > *,
+body.index9 #topBar .top-vehicle-wrapper,
+body.index9 #topBar .top-skill,
+body.index9 #topBar .top-primary-actions,
+body.index9 #topBar .top-actions {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  height: auto !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 「黒い箱」を廃止: ボタン/カードの背景・枠・影を消し、地図上にアイコン+ラベルが
+   直接浮く形に。視認性のため影を付与。選択中カードと主役ボタンのみ塗りを残す。 */
+body.index9 #topBar .veh-card,
+body.index9 #topBar .top-road-btn,
+body.index9 #topBar .top-actions .ctrl-btn {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+body.index9 #topBar .veh-card .veh-icon,
+body.index9 #topBar .top-road-btn svg,
+body.index9 #topBar .top-actions .ctrl-btn svg {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.9));
+}
+body.index9 #topBar .veh-card:hover,
+body.index9 #topBar .top-road-btn:hover,
+body.index9 #topBar .top-actions .ctrl-btn:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+/* 選択中の車両カードはハイライトを残す */
+body.index9 #topBar .veh-card.active {
+  background: rgba(99, 102, 241, 0.24) !important;
+  border-color: var(--wb-accent) !important;
+}
+/* 中央の余白を埋める伸縮スペーサー（primary-actions を右に寄せる） */
+body.index9 .top-primary-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  margin-left: auto !important;
+  flex: 0 0 auto !important;
+}
+body.index9 .top-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+}
+
+/* ツールボタン本体: 幅自動・テキスト折り返し禁止・アイコンとラベルを整列 */
+body.index9 .top-actions .ctrl-btn,
+body.index9 .top-primary-actions .ctrl-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  overflow: visible !important;
+  flex: 0 0 auto !important;
+  line-height: 1 !important;
+}
+body.index9 .top-actions .ctrl-btn svg,
+body.index9 .top-primary-actions .ctrl-btn svg,
+body.index9 .assess-action-btn svg,
+body.index9 .top-road-btn svg {
+  flex: 0 0 auto !important;
+}
+
+/* アイコンのみのボタン（設定・リセット）は正方形に */
+body.index9 .top-actions .ctrl-btn.icon {
+  width: 36px !important;
+  padding: 0 !important;
+}
+
+/* 車両カードも nowrap で潰れ防止 */
+body.index9 .veh-cards {
+  display: flex !important;
+  gap: 8px !important;
+  flex-wrap: nowrap !important;
+}
+body.index9 .veh-cards .veh-card {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+}
+
+/* 判定実行・道路取得が縦に潰れないよう高さを担保 */
+body.index9 .assess-action-btn,
+body.index9 .top-road-btn {
+  white-space: nowrap !important;
+  width: auto !important;
+  flex: 0 0 auto !important;
+}
+
+/* Top bar: keep groups unframed, but give every actionable control its own button surface. */
+body.index9 #topBar .veh-card,
+body.index9 #topBar .top-road-btn,
+body.index9 #topBar .top-actions .ctrl-btn {
+  background: rgba(10, 12, 15, 0.72) !important;
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+}
+
+body.index9 #topBar .top-skill {
+  background: rgba(10, 12, 15, 0.68) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 7px !important;
+  padding: 0 12px !important;
+  min-height: 42px !important;
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+}
+
+body.index9 #topBar .veh-card:hover,
+body.index9 #topBar .top-road-btn:hover,
+body.index9 #topBar .top-actions .ctrl-btn:hover {
+  background: rgba(24, 28, 34, 0.84) !important;
+  border-color: rgba(129, 140, 248, 0.42) !important;
+}
+
+body.index9 #topBar .veh-card.active {
+  background: rgba(99, 102, 241, 0.36) !important;
+  border-color: rgba(129, 140, 248, 0.82) !important;
+  box-shadow:
+    0 10px 24px rgba(99, 102, 241, 0.24),
+    inset 0 -3px 0 var(--wb-accent-hi) !important;
+}
+
+body.index9 #topBar .top-road-btn {
+  border-color: rgba(56, 189, 248, 0.45) !important;
+}
+
+body.index9 #topBar .assess-action-btn {
+  box-shadow:
+    0 10px 26px rgba(99, 102, 241, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+/* Compact sidebar workflow: show the primary workflow action without scrolling. */
+body.index9 #sidebarBrand {
+  height: 62px !important;
+  padding: 0 18px !important;
+}
+
+body.index9 #sidebarContent {
+  padding: 10px 12px !important;
+  gap: 8px !important;
+}
+
+body.index9 #floatSearch {
+  padding: 10px 12px !important;
+}
+
+body.index9 #floatSearch details {
+  margin-top: 8px !important;
+}
+
+body.index9 #floatSearch summary {
+  line-height: 1.2 !important;
+}
+
+body.index9 #floatSearch .fs-convert {
+  display: grid !important;
+  gap: 7px !important;
+  margin-top: 8px !important;
+}
+
+body.index9 #sidebar .ctrl-input {
+  min-height: 34px !important;
+}
+
+body.index9 #workflowDock {
+  padding: 10px 12px !important;
+}
+
+body.index9 #workflowDock .wf-head {
+  min-height: 28px !important;
+}
+
+body.index9 #workflowDock .wf-list {
+  gap: 2px !important;
+  margin-top: 7px !important;
+}
+
+body.index9 #workflowDock .wf-item {
+  min-height: 29px !important;
+  padding: 4px 8px !important;
+  gap: 8px !important;
+}
+
+body.index9 #workflowDock .wf-dot {
+  width: 22px !important;
+  height: 22px !important;
+}
+
+body.index9 #workflowDock .wf-label,
+body.index9 #workflowDock .wf-state {
+  line-height: 1.15 !important;
+}
+
+body.index9 #workflowDock .wf-hint {
+  margin-top: 7px !important;
+  padding: 9px 10px !important;
+  line-height: 1.35 !important;
+}
+
+body.index9 #workflowDock .wf-step-actions {
+  margin-top: 8px !important;
+  gap: 6px !important;
+}
+
+body.index9 #workflowDock .wf-primary-action {
+  min-height: 38px !important;
+  background: transparent !important;
+  border: 1px solid var(--wb-line) !important;
+  color: var(--wb-text) !important;
+  box-shadow: none !important;
+}
+
+body.index9 #workflowDock .wf-primary-action:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+  border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+@media (max-width: 760px) {
+  body.index9 #sidebar {
+    inset: 8px auto 8px 8px !important;
+    width: min(376px, calc(100vw - 16px)) !important;
+    height: auto !important;
+    max-height: calc(100vh - 16px) !important;
+    z-index: 8200 !important;
+  }
+
+  body.index9 #topBar {
+    top: auto !important;
+    bottom: 108px !important;
+  }
+}

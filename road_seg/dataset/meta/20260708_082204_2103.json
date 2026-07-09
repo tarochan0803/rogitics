@@ -1,0 +1,21 @@
+{
+  "source": "manual_corrected_surface",
+  "bbox": [
+    139.76769356103927,
+    35.67067626759138,
+    139.77237401577025,
+    35.67271794435602
+  ],
+  "zoom": 18,
+  "mPerPx": 0.48511935499995507,
+  "initMask": "rdcl",
+  "roadWidthEdits": [
+    {
+      "id": "rdcl-394",
+      "oldWidthM": 4,
+      "newWidthM": 8,
+      "rank": 0
+    }
+  ],
+  "savedAt": "2026-07-08T08:25:17.874Z"
+}

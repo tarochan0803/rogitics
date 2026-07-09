@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>住所一括ジオコーディング（Excel）｜NCN</title>
+<!-- Excel(.xlsx/.csv) 読み書き用ライブラリ（SheetJS） -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+  :root { --green:#2e7d32; --blue:#1565c0; --orange:#ef6c00; --red:#c62828; --gray:#607d8b; }
+  * { box-sizing: border-box; }
+  body { font-family: "Meiryo","MS PGothic",sans-serif; margin: 0; background:#f4f6f8; color:#222; }
+  header { background:#0d47a1; color:#fff; padding:14px 20px; }
+  header h1 { font-size:18px; margin:0; }
+  header p { margin:4px 0 0; font-size:12px; opacity:.85; }
+  main { padding:18px 20px 60px; max-width:1200px; margin:0 auto; }
+  .card { background:#fff; border:1px solid #e0e4e8; border-radius:8px; padding:16px 18px; margin-bottom:16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .card h2 { font-size:14px; margin:0 0 12px; color:#0d47a1; border-left:4px solid #0d47a1; padding-left:8px; }
+  .row { display:flex; flex-wrap:wrap; gap:14px; align-items:center; }
+  label.fld { font-size:13px; display:flex; flex-direction:column; gap:4px; }
+  select, input[type="number"] { padding:6px 8px; border:1px solid #bcc4cc; border-radius:5px; font-size:13px; min-width:120px; }
+  input[type="file"] { font-size:13px; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:9px 18px; font-size:14px; font-weight:bold; color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .btn-run { background:#0d47a1; }
+  .btn-stop { background:var(--red); }
+  .btn-dl { background:var(--green); }
+  .hint { font-size:12px; color:#666; margin-top:8px; line-height:1.6; }
+  .pv-warn { font-size:12px; color:var(--orange); margin-top:6px; }
+  #progressWrap { margin-top:12px; display:none; }
+  #progressBar { height:14px; background:#e0e4e8; border-radius:7px; overflow:hidden; }
+  #progressFill { height:100%; width:0%; background:#0d47a1; transition:width .15s; }
+  #progressText { font-size:12px; margin-top:6px; color:#333; }
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th, td { border:1px solid #e0e4e8; padding:5px 7px; text-align:left; vertical-align:top; white-space:nowrap; }
+  th { background:#f0f3f6; position:sticky; top:0; }
+  .tbl-wrap { max-height:480px; overflow:auto; border:1px solid #e0e4e8; border-radius:6px; }
+  td.coord { font-family:Consolas,monospace; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:10px; color:#fff; font-size:11px; font-weight:bold; }
+  .tag-addr { background:var(--green); }
+  .tag-blue { background:var(--blue); }
+  .tag-none { background:var(--red); }
+  .tag-err  { background:var(--gray); }
+  .stats { display:flex; gap:18px; font-size:13px; margin-bottom:10px; flex-wrap:wrap; }
+  .stats b { font-size:16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>住所一括ジオコーディング（Excel）</h1>
+  <p>① 住所検索 → ② ダメなら地番住所変換検索 → ③ それでもダメなら「該当なし」。Excelを読み込んで一括処理します。</p>
+</header>
+
+<main>
+  <!-- STEP1: ファイル読み込み -->
+  <div class="card">
+    <h2>STEP 1 ｜ Excel / CSV を読み込む</h2>
+    <div class="row">
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+      <label class="fld">シート
+        <select id="sheetSelect" disabled></select>
+      </label>
+      <label class="fld">住所の列
+        <select id="colSelect" disabled></select>
+      </label>
+    </div>
+    <div class="hint">
+      1行目を見出し行として扱い、住所が入っている列を選んでください（「住所」を含む列を自動選択します）。
+    </div>
+  </div>
+
+  <!-- STEP2: 実行 -->
+  <div class="card">
+    <h2>STEP 2 ｜ 一括検索を実行</h2>
+    <div class="row">
+      <button class="btn-run" id="runBtn" disabled>▶ 一括検索を開始</button>
+      <button class="btn-stop" id="stopBtn" disabled>■ 停止</button>
+      <label class="fld">1件あたりの待ち時間(ms)
+        <input type="number" id="delayInput" value="120" min="0" max="2000" step="20">
+      </label>
+    </div>
+    <div class="pv-warn" id="pvWarn"></div>
+    <div id="progressWrap">
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <div id="progressText"></div>
+    </div>
+  </div>
+
+  <!-- STEP3: 結果 -->
+  <div class="card" id="resultCard" style="display:none;">
+    <h2>STEP 3 ｜ 結果</h2>
+    <div class="stats" id="stats"></div>
+    <button class="btn-dl" id="dlBtn" disabled>⬇ 結果をExcel(.xlsx)でダウンロード</button>
+    <div class="tbl-wrap" style="margin-top:12px;">
+      <table id="resultTable"><thead></thead><tbody></tbody></table>
+    </div>
+  </div>
+</main>
+
+<script>
+/* =========================================================================
+   ゼンリン ZIP API 設定（既存「ＮＣＮ Ｗｅｂ住所検索システムv2.html」と同一）
+   ========================================================================= */
+const API = 'https://api.zip-site.com/api';
+const CRED = { user_id:'2Ec5mMed', password:'qQE2Y2ze', service_id:'50000001', device_flag:'1' };
+// 機能コード（login応答の items.func から lmtinf を組み立てるためのキー）
+const FUNC = {
+  address:           { id:'0002', subid:'0001' }, // 住所検索（1PV）
+  bluemap_to_address:{ id:'0002', subid:'0027' }, // 地番住所変換（2PV）
+};
+const enc = encodeURIComponent;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* ---- 画面状態 ---- */
+let workbook = null;
+let headers  = [];     // 見出し行（配列）
+let dataRows = [];     // データ行（配列の配列）
+let results  = [];     // 結果 [{orig, lat, lng, method, matchAddr, hit}]
+let cancelFlag = false;
+
+/* =========================================================================
+   STEP1: ファイル読み込み
+   ========================================================================= */
+const $ = (id) => document.getElementById(id);
+
+$('fileInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const data = new Uint8Array(ev.target.result);
+    workbook = XLSX.read(data, { type:'array' });
+    // シート選択肢
+    const sel = $('sheetSelect');
+    sel.innerHTML = '';
+    workbook.SheetNames.forEach(n => {
+      const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o);
+    });
+    sel.disabled = workbook.SheetNames.length <= 1;
+    loadSheet(workbook.SheetNames[0]);
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+$('sheetSelect').addEventListener('change', (e) => loadSheet(e.target.value));
+
+function loadSheet(name) {
+  const ws = workbook.Sheets[name];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', blankrows:false });
+  headers  = (aoa[0] || []).map(h => String(h));
+  dataRows = aoa.slice(1).filter(r => r.some(c => String(c).trim() !== ''));
+
+  // 列選択肢
+  const cs = $('colSelect');
+  cs.innerHTML = '';
+  headers.forEach((h, i) => {
+    const o = document.createElement('option'); o.value = i; o.textContent = `${i+1}列目: ${h || '(無題)'}`;
+    cs.appendChild(o);
+  });
+  cs.disabled = headers.length === 0;
+  // 「住所」を含む列を自動選択（無ければ先頭）
+  const auto = headers.findIndex(h => /住所|address|所在|地番/i.test(h));
+  cs.value = auto >= 0 ? auto : 0;
+
+  $('runBtn').disabled = dataRows.length === 0;
+  updatePvWarn();
+}
+
+$('colSelect').addEventListener('change', updatePvWarn);
+
+function updatePvWarn() {
+  const n = dataRows.length;
+  if (!n) { $('pvWarn').textContent = ''; return; }
+  $('pvWarn').textContent =
+    `読み込み件数: ${n} 件 ／ 消費PVの目安: 最小 ${n}PV（全件 住所検索のみヒット）〜 最大 ${n*3}PV（全件で地番変換まで実行）。月10,000PV上限にご注意ください。`;
+}
+
+/* =========================================================================
+   STEP2: 一括検索
+   ========================================================================= */
+$('runBtn').addEventListener('click', runBatch);
+$('stopBtn').addEventListener('click', () => { cancelFlag = true; $('progressText').textContent += ' … 停止要求を受け付けました'; });
+
+async function runBatch() {
+  const colIdx = parseInt($('colSelect').value, 10);
+  const delayMs = Math.max(0, parseInt($('delayInput').value, 10) || 0);
+  cancelFlag = false;
+  results = [];
+  $('runBtn').disabled = true; $('stopBtn').disabled = false; $('dlBtn').disabled = true;
+  $('fileInput').disabled = true; $('sheetSelect').disabled = true; $('colSelect').disabled = true;
+  $('progressWrap').style.display = 'block';
+  $('resultCard').style.display = 'block';
+  initResultTable();
+
+  let session;
+  try {
+    setProgress(0, dataRows.length, 'ログイン中…');
+    session = await login();
+  } catch (err) {
+    alert('ログインに失敗しました: ' + err.message);
+    resetControls();
+    return;
+  }
+
+  for (let i = 0; i < dataRows.length; i++) {
+    if (cancelFlag) break;
+    const row = dataRows[i];
+    const word = String(row[colIdx] ?? '').trim();
+    let rec = { orig: row, lat:'', lng:'', method:'該当なし', matchAddr:'', hit:0 };
+
+    if (word === '') {
+      rec.method = '（住所空欄）';
+    } else {
+      try {
+        // ① 住所検索（ヒット数1=一意に特定できたときのみ採用）
+        let hitRes = await searchAddress(session, word);
+        if (hitRes) {
+          rec = { orig:row, lat:hitRes.lat, lng:hitRes.lng,
+                  method:'住所検索', matchAddr:hitRes.addr, hit:hitRes.hit };
+        } else {
+          // ② 地番住所変換
+          if (delayMs) await sleep(delayMs);
+          let blueRes = await searchBluemap(session, word);
+          if (blueRes) {
+            rec = { orig:row, lat:blueRes.lat, lng:blueRes.lng,
+                    method:'地番住所変換', matchAddr:blueRes.addr, hit:blueRes.hit };
+          } else {
+            // ③ 該当なし
+            rec.method = '該当なし';
+          }
+        }
+      } catch (err) {
+        rec.method = 'エラー';
+        rec.matchAddr = err.message;
+      }
+    }
+
+    results.push(rec);
+    appendResultRow(i, word, rec);
+    setProgress(i + 1, dataRows.length, `処理中… ${i+1}/${dataRows.length}`);
+    if (delayMs) await sleep(delayMs);
+  }
+
+  try { await logout(session.aid); } catch (e) {}
+
+  setProgress(results.length, dataRows.length, cancelFlag ? '停止しました' : '完了しました');
+  updateStats();
+  $('dlBtn').disabled = results.length === 0;
+  resetControls();
+}
+
+function resetControls() {
+  $('runBtn').disabled = dataRows.length === 0;
+  $('stopBtn').disabled = true;
+  $('fileInput').disabled = false;
+  $('sheetSelect').disabled = workbook && workbook.SheetNames.length <= 1;
+  $('colSelect').disabled = headers.length === 0;
+}
+
+/* =========================================================================
+   API 呼び出し
+   ========================================================================= */
+async function login() {
+  const url = `${API}/auth/login?user_id=${enc(CRED.user_id)}&password=${enc(CRED.password)}`
+            + `&service_id=${enc(CRED.service_id)}&device_flag=${enc(CRED.device_flag)}`;
+  const j = await (await fetch(url)).json();
+  if (!j.status || j.status.code !== '10100000') {
+    throw new Error('login code=' + (j.status ? j.status.code : 'unknown'));
+  }
+  const funcList = j.result.items.func;
+  const fa = funcList.find(f => f.id === FUNC.address.id && f.subid === FUNC.address.subid);
+  const fb = funcList.find(f => f.id === FUNC.bluemap_to_address.id && f.subid === FUNC.bluemap_to_address.subid);
+  return {
+    kid: j.result.kid,
+    aid: j.result.aid,
+    lmtinfAddr: fa ? (fa.areaCode + ',' + fa.funcInfo) : null,
+    lmtinfBlue: fb ? (fb.areaCode + ',' + fb.funcInfo) : null,
+  };
+}
+
+// ① 住所検索（文字列） → ヒット数が「1件」のときだけ座標を返す（一意に特定できた住所のみ）。
+//    0件＝該当なし、複数件＝不確定 はどちらも null を返して ② 地番住所変換へフォールバックさせる。
+async function searchAddress(s, word) {
+  if (!s.lmtinfAddr) return null;
+  const url = `${API}/zips/general/address?zis_zips_authkey=${enc(s.kid)}`
+            + `&zis_authtype=aid&zis_aid=${enc(s.aid)}&zis_lmtinf=${enc(s.lmtinfAddr)}`
+            + `&address_level=TBN&word=${enc(word)}&word_match_type=3`
+            + `&limit=${enc('0,1')}&datum=JGD`;
+  const j = await (await fetch(url)).json();
+  if (j.status === 'OK' && j.result.info.hit === 1 && j.result.item && j.result.item[0]) {
+    const it = j.result.item[0];
+    // position は ["経度","緯度"] の順
+    return { lat: it.position[1], lng: it.position[0], addr: it.address, hit: 1 };
+  }
+  return null;
+}
+
+// ② 地番住所変換 → 座標を返す（無ければ null）
+async function searchBluemap(s, word) {
+  if (!s.lmtinfBlue) return null;
+  const url = `${API}/zips/general/bluemap_to_address?zis_zips_authkey=${enc(s.kid)}`
+            + `&zis_authtype=aid&zis_aid=${enc(s.aid)}&zis_lmtinf=${enc(s.lmtinfBlue)}`
+            + `&bluemap_address=${enc(word)}&datum=JGD`;
+  const j = await (await fetch(url)).json();
+  if (j.status === 'OK' && j.result.item && j.result.item[0] && j.result.item[0].address) {
+    const a = j.result.item[0].address[0];
+    return { lat: a.position[1], lng: a.position[0], addr: a.address,
+             hit: (j.result.info ? j.result.info.hit : 1) };
+  }
+  return null;
+}
+
+async function logout(aid) {
+  await fetch(`${API}/auth/logout?aid=${enc(aid)}`);
+}
+
+/* =========================================================================
+   表示まわり
+   ========================================================================= */
+function setProgress(done, total, text) {
+  const pct = total ? Math.round(done / total * 100) : 0;
+  $('progressFill').style.width = pct + '%';
+  $('progressText').textContent = `${text}　(${pct}%)`;
+}
+
+function initResultTable() {
+  const thead = $('resultTable').querySelector('thead');
+  const tbody = $('resultTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  thead.innerHTML = '<tr>'
+    + '<th>#</th><th>入力住所</th><th>取得方法</th><th>緯度</th><th>経度</th><th>マッチ住所</th><th>ヒット数</th>'
+    + '</tr>';
+  $('stats').innerHTML = '';
+}
+
+function tagHtml(method) {
+  if (method.startsWith('住所検索'))   return `<span class="tag tag-addr">${method}</span>`;
+  if (method === '地番住所変換')       return `<span class="tag tag-blue">地番住所変換</span>`;
+  if (method === '該当なし')           return `<span class="tag tag-none">該当なし</span>`;
+  if (method === 'エラー')             return `<span class="tag tag-err">エラー</span>`;
+  return `<span class="tag tag-err">${method}</span>`;
+}
+
+function appendResultRow(i, word, rec) {
+  const tbody = $('resultTable').querySelector('tbody');
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+      `<td>${i+1}</td>`
+    + `<td>${escapeHtml(word)}</td>`
+    + `<td>${tagHtml(rec.method)}</td>`
+    + `<td class="coord">${rec.lat}</td>`
+    + `<td class="coord">${rec.lng}</td>`
+    + `<td>${escapeHtml(rec.matchAddr || '')}</td>`
+    + `<td>${rec.hit || ''}</td>`;
+  tbody.appendChild(tr);
+  tr.scrollIntoView({ block:'nearest' });
+}
+
+function updateStats() {
+  const total = results.length;
+  const addr  = results.filter(r => r.method.startsWith('住所検索')).length;
+  const blue  = results.filter(r => r.method === '地番住所変換').length;
+  const none  = results.filter(r => r.method === '該当なし').length;
+  const err   = results.filter(r => r.method === 'エラー' || r.method === '（住所空欄）').length;
+  $('stats').innerHTML =
+      `<div>合計 <b>${total}</b></div>`
+    + `<div style="color:var(--green)">住所検索 <b>${addr}</b></div>`
+    + `<div style="color:var(--blue)">地番住所変換 <b>${blue}</b></div>`
+    + `<div style="color:var(--red)">該当なし <b>${none}</b></div>`
+    + `<div style="color:var(--gray)">エラー/空欄 <b>${err}</b></div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+/* =========================================================================
+   STEP3: ダウンロード（元の列 + 結果列）
+   ========================================================================= */
+$('dlBtn').addEventListener('click', () => {
+  const outHeader = [...headers, '緯度', '経度', '取得方法', 'マッチ住所', 'ヒット数'];
+  const out = [outHeader];
+  results.forEach(r => {
+    out.push([...r.orig, r.lat, r.lng, r.method, r.matchAddr, r.hit]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(out);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '検索結果');
+  const ts = new Date().toISOString().slice(0,16).replace(/[:T]/g,'').replace('-','').replace('-','');
+  XLSX.writeFile(wb, `住所検索結果_${ts}.xlsx`);
+});
+</script>
+</body>
+</html>
