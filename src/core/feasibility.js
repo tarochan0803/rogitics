@@ -1,5 +1,5 @@
 import { DEFAULTS_HIDDEN, getRouteTrackingTurnRadius, yoloAuthHeaders } from '../config.js';
-import { getVehicleFootprintConfig } from '../3d/clearanceSolids.js';
+import { getFeatureHeightInfo, getVehicleFootprintConfig, isReliableOverheadClearanceSource } from '../3d/clearanceSolids.js';
 import { coordinateSystem, safeDifference, safeIntersect, safeUnion, turf } from '../utils/geo.js';
 import { simulatePathPoses } from './physics.js';
 import { buildIntersectionWidening } from './intersectionWidening.js';
@@ -563,29 +563,8 @@ function isPolygonLikeFeature(f) {
   return !!g && (g.type === 'Polygon' || g.type === 'MultiPolygon');
 }
 
-function normalizeHeight(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 function getFeatureHeight(feature, fallback = 3) {
-  const props = feature?.properties && typeof feature.properties === 'object' ? feature.properties : {};
-  // P1-3: 高さソース別の信頼度推定（heightClearance の段階化に使う）
-  // tag: OSM の height/h 等タグ実測 / levels: building:levels から推定 / estimated: フォールバック値
-  const tagCandidates = [
-    { key: 'h', src: 'tag' }, { key: 'height', src: 'tag' },
-    { key: 'H', src: 'tag' }, { key: 'z', src: 'tag' }, { key: 'alt', src: 'tag' }
-  ];
-  for (const { key, src } of tagCandidates) {
-    const h = normalizeHeight(props[key]);
-    if (h != null) return { value: h, source: src };
-  }
-  const levels = normalizeHeight(props['building:levels']);
-  if (levels != null && levels > 0) {
-    return { value: levels * 3.0, source: 'levels' };
-  }
-  const fb = Number.isFinite(fallback) ? fallback : 3;
-  return { value: fb, source: 'estimated' };
+  return getFeatureHeightInfo(feature, fallback);
 }
 
 function isHeightOnlyFeature(feature) {
@@ -883,6 +862,7 @@ export function analyzeContactFeasibility({
         const obH = heightInfo?.value;
         const clearance = heightClearanceFor(heightInfo);
         if (obstacleHeightOnly[j] && vehicleHeight > 0) {
+          if (!isReliableOverheadClearanceSource(heightInfo?.source)) continue;
           if (Number.isFinite(obH) && vehicleHeight + clearance <= obH) continue;
         }
         try {

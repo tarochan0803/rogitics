@@ -113,6 +113,8 @@ def run_inprocess():
     ok &= cond
 
     ok &= run_annotate_inprocess()
+    ok &= run_yolo_inprocess()
+    ok &= run_yolo_predict_status_inprocess()
     return ok
 
 
@@ -176,6 +178,130 @@ def run_annotate_inprocess():
             setattr(ds, k, v)
         shutil.rmtree(tmp, ignore_errors=True)
     return ok
+
+
+def run_yolo_inprocess():
+    """/yolo/fetch → /yolo/save をネット無し・一時datasetで検証。"""
+    import os
+    import shutil
+    import tempfile
+
+    import numpy as np
+    from PIL import Image
+
+    from . import tiles as tiles_mod
+    from . import yolo_dataset as yd
+    from .geo import tile_grid_for_bbox
+    from .tiles import StitchResult
+    from .server import (yolo_fetch, yolo_next_unreviewed, yolo_save, yolo_update,
+                         YoloFetchRequest, YoloSaveRequest, YoloUpdateRequest)
+
+    ok = True
+    tmp = tempfile.mkdtemp(prefix="road_seg_yolo_")
+    keys = [
+        "YOLO_DATASET_DIR",
+        "SOURCE_DIR",
+        "IMAGES_DIR",
+        "LABELS_DIR",
+        "SEG_LABELS_DIR",
+        "META_DIR",
+        "PENDING_DIR",
+        "PREPARED_DIR",
+        "LAST_TRAIN_META",
+    ]
+    saved = {k: getattr(yd, k) for k in keys}
+    yd.YOLO_DATASET_DIR = tmp
+    yd.SOURCE_DIR = os.path.join(tmp, "source")
+    yd.IMAGES_DIR = os.path.join(yd.SOURCE_DIR, "images")
+    yd.LABELS_DIR = os.path.join(yd.SOURCE_DIR, "labels")
+    yd.SEG_LABELS_DIR = os.path.join(yd.SOURCE_DIR, "labels_segment")
+    yd.META_DIR = os.path.join(yd.SOURCE_DIR, "meta")
+    yd.PENDING_DIR = os.path.join(tmp, ".pending")
+    yd.PREPARED_DIR = os.path.join(tmp, "prepared")
+    yd.LAST_TRAIN_META = os.path.join(tmp, "last_train.json")
+
+    line = _straight_line(35.68, 139.767, 80.0, 20.0)
+    lons = [c[0] for c in line]; lats = [c[1] for c in line]
+    bbox = [min(lons), min(lats), max(lons), max(lats)]
+    grid = tile_grid_for_bbox(*bbox, 18, margin_tiles=0)
+    rgb = np.zeros((grid.height_px, grid.width_px, 3), np.uint8)
+    rgb[:] = (120, 120, 120)
+    orig = tiles_mod.fetch_stitched
+    tiles_mod.fetch_stitched = lambda *a, **k: StitchResult(rgb=rgb, grid=grid, missing_tiles=0)
+    try:
+        out = yolo_fetch(YoloFetchRequest(bbox=bbox, zoom=18, layer="seamlessphoto"))
+        cond = bool(out.get("id")) and str(out.get("image", "")).startswith("data:image/png")
+        print(f"[{'PASS' if cond else 'FAIL'}] /yolo/fetch -> id={out.get('id')} "
+              f"{out.get('width')}x{out.get('height')} classes={len(out.get('classes') or [])}")
+        ok &= cond
+
+        res = yolo_save(YoloSaveRequest(
+            id=out["id"],
+            width=out["width"],
+            height=out["height"],
+            boxes=[{"classId": 0, "x": 10, "y": 12, "w": 40, "h": 24}],
+            polygons=[{"classId": 2, "points": [[80, 80], [120, 80], [110, 125], [76, 116]]}],
+            meta={"t": 1},
+        ))
+        label_path = os.path.join(yd.LABELS_DIR, out["id"] + ".txt")
+        seg_label_path = os.path.join(yd.SEG_LABELS_DIR, out["id"] + ".txt")
+        cond2 = (res.get("boxCount") == 1
+                 and res.get("polygonCount") == 1
+                 and os.path.exists(os.path.join(yd.IMAGES_DIR, out["id"] + ".png"))
+                 and os.path.exists(label_path)
+                 and os.path.exists(seg_label_path)
+                 and open(label_path, encoding="utf-8").read().strip().startswith("0 ")
+                 and "2 " in open(seg_label_path, encoding="utf-8").read())
+        print(f"[{'PASS' if cond2 else 'FAIL'}] /yolo/save -> boxes={res.get('boxCount')} "
+              f"polygons={res.get('polygonCount')} (YOLO画像/ラベル確認)")
+        ok &= cond2
+
+        split = yd.prepare_split(val_ratio=0.5, seed=1, task="segment")
+        cond3 = os.path.exists(split["yaml"]) and split["train"] >= 1
+        print(f"[{'PASS' if cond3 else 'FAIL'}] yolo prepare_split(segment) -> "
+              f"train={split.get('train')} val={split.get('val')}")
+        ok &= cond3
+
+        img2 = np.zeros((256, 256, 3), np.uint8); img2[:] = (100, 100, 100)
+        orig_fetch_tile = tiles_mod._fetch_tile
+        tiles_mod._fetch_tile = lambda *a, **k: Image.fromarray(img2)
+        try:
+            exp = yd.export_tiles_for_bbox(*bbox, zoom=18, layer="seamlessphoto", max_tiles=1)
+        finally:
+            tiles_mod._fetch_tile = orig_fetch_tile
+        cond4 = exp.get("exported") == 1 and yd.stats().get("samples", 0) >= 2
+        print(f"[{'PASS' if cond4 else 'FAIL'}] /yolo/export_tiles -> exported={exp.get('exported')}")
+        ok &= cond4
+
+        nxt = yolo_next_unreviewed()
+        upd = yolo_update(YoloUpdateRequest(
+            id=nxt["id"],
+            width=nxt["width"],
+            height=nxt["height"],
+            boxes=[],
+            polygons=[{"classId": 1, "points": [{"x": 20, "y": 20}, {"x": 80, "y": 22}, {"x": 74, "y": 75}]}],
+            meta={"reviewedAt": "2026-07-09T00:00:00Z"},
+        ))
+        cond5 = upd.get("polygonCount") == 1 and yd.stats().get("unreviewedSamples") == 0
+        print(f"[{'PASS' if cond5 else 'FAIL'}] /yolo/next_unreviewed + /yolo/update -> "
+              f"id={nxt.get('id')} polygons={upd.get('polygonCount')}")
+        ok &= cond5
+    finally:
+        tiles_mod.fetch_stitched = orig
+        for k, v in saved.items():
+            setattr(yd, k, v)
+        shutil.rmtree(tmp, ignore_errors=True)
+    return ok
+
+
+def run_yolo_predict_status_inprocess():
+    from .server import yolo_model_status
+
+    out = yolo_model_status()
+    cond = isinstance(out, dict) and "available" in out and "weights" in out
+    print(f"[{'PASS' if cond else 'FAIL'}] /yolo/model_status -> available={out.get('available')} "
+          f"weights={out.get('weights')}")
+    return cond
 
 
 def ping_http(base_url):

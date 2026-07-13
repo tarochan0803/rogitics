@@ -185,7 +185,11 @@ async function main() {
   }
   fs.mkdirSync(opts.out, { recursive: true });
 
-  const browser = await puppeteer.launch({ headless: true });
+  const chromeArgs = [];
+  if (process.env.PUPPETEER_NO_SANDBOX === '1') {
+    chromeArgs.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+  const browser = await puppeteer.launch({ headless: true, args: chromeArgs });
 
   const runId = Date.now();
   const traceDir = path.join(opts.out, `traces_${runId}`);

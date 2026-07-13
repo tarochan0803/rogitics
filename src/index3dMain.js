@@ -305,12 +305,13 @@ function initThreeRoadLayerControls() {
     });
   });
 
-  // PLATEAU 高さ補正スライダー。window.PLATEAU_Y_OFFSET を毎フレーム反映するのでライブ調整可能。
+  // PLATEAU 高さ微調整スライダー。実接地は3D Tiles bboxで自動補正し、
+  // window.PLATEAU_Y_OFFSET はその後の手動オフセットとしてライブ反映する。
   const plateauYInput = byId('plateauYOffset');
   const plateauYValue = byId('plateauYOffsetValue');
   if (plateauYInput) {
     const applyPlateauY = (raw) => {
-      const v = Math.max(-15, Math.min(5, Number(raw)));
+      const v = Math.max(-20, Math.min(20, Number(raw)));
       if (!Number.isFinite(v)) return;
       window.PLATEAU_Y_OFFSET = v;
       if (plateauYValue) plateauYValue.textContent = `${v.toFixed(1)}m`;
@@ -914,11 +915,11 @@ function renderSolidPanel() {
   const s = report.summary || {};
   const solidMetrics = getCollisionSolidMetrics();
   const rq = solidMetrics.roadQuality || {};
-  const statusClass = s.lowClearanceCount > 0 ? 'ng' : 'ok';
+  const statusClass = s.lowClearanceCount > 0 ? 'ng' : ((s.advisoryClearanceCount || 0) > 0 ? 'warn' : 'ok');
   summaryEl.innerHTML = html`
     <span class="solid-status ${statusClass}">${s.status}</span>
     建物 ${s.buildingSolidCount || 0} / 地上障害物 ${s.obstacleSolidCount || 0} / 頭上障害物 ${s.overheadSolidCount || 0}
-    <br><span class="solid-sub">必要高 ${s.requiredHeightM}m / 車高 ${s.vehicleHeightM}m + 積載 ${s.cargoStackHeightM}m / 経路近傍の頭上 ${s.nearRouteOverheadCount || 0} / 低クリアランス ${s.lowClearanceCount || 0}</span>
+    <br><span class="solid-sub">必要高 ${s.requiredHeightM}m / 車高 ${s.vehicleHeightM}m + 積載 ${s.cargoStackHeightM}m / 経路近傍の頭上 ${s.nearRouteOverheadCount || 0} / 低クリアランス ${s.lowClearanceCount || 0} / 推定警告 ${s.advisoryClearanceCount || 0}</span>
     <br><span class="solid-sub">道路補正: 交差点 ${rq.intersectionCaps || 0} / 道路端 ${rq.roadEdges || 0} / 中心線 ${rq.centerlines || 0} / 一方通行 ${rq.onewayArrows || 0}</span>
   `;
 
@@ -928,9 +929,9 @@ function renderSolidPanel() {
     return;
   }
   listEl.innerHTML = rows.slice(0, 80).map((row) => {
-    const cls = row.status === 'NG' ? 'ng' : 'ok';
+    const cls = row.status === 'NG' ? 'ng' : (row.status === 'ADVISORY' ? 'warn' : 'ok');
     const near = row.nearRoute ? '経路上' : '経路外';
-    return html`<div class="solid-row ${cls}"><span class="solid-name">${row.label || row.id}</span><span class="solid-near">${near}</span><span class="solid-height">高さ ${row.heightM}m / 必要 ${row.requiredHeightM}m</span><span class="solid-margin">余裕 ${row.marginM}m</span></div>`;
+    return html`<div class="solid-row ${cls}"><span class="solid-name">${row.label || row.id}</span><span class="solid-near">${near}</span><span class="solid-height">高さ ${row.heightM}m / 必要 ${row.requiredHeightM}m</span><span class="solid-margin">${row.status === 'ADVISORY' ? '推定 ' : ''}余裕 ${row.marginM}m</span></div>`;
   }).join('');
 }
 
@@ -1884,6 +1885,7 @@ function exposeTestHooks() {
   window.__index3d_renderSceneThree = () => renderSceneThree(store.getState());
   window.index3DGetStats = () => { updateMetrics(); return window.index3DStats; };
   window.index3DGetAutonomyReport = () => state.lastAutonomyReport || buildCurrentAutonomyReport();
+  window.index3DGetAutonomyDriveMetrics = () => getAutonomyDriveMetrics();
   window.index3DGetPlateauMetrics = () => getPlateauTilesMetrics();
   window.index3DGetSafetyMetrics = () => getSafetyMonitorMetrics();
   window.index3DGetSafetyTrace = () => window.INDEX3D_SAFETY_LAST_TRACE || null;

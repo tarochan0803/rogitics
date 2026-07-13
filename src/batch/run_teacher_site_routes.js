@@ -196,7 +196,11 @@ async function main() {
   if (!routes.length) throw new Error('routes file has no route records');
   fs.mkdirSync(opts.outDir, { recursive: true });
 
-  const browser = await puppeteer.launch({ headless: true });
+  const chromeArgs = [];
+  if (process.env.PUPPETEER_NO_SANDBOX === '1') {
+    chromeArgs.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+  const browser = await puppeteer.launch({ headless: true, args: chromeArgs });
   const results = [];
   const runId = Date.now();
   const traceDir = path.join(opts.outDir, `teacher_traces_${runId}`);

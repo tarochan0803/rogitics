@@ -58,6 +58,11 @@ export function isHeightOnlyFeature(feature) {
 
 export function getFeatureHeightInfo(feature, fallback = DEFAULT_OBSTACLE_HEIGHT_M) {
   const props = feature?.properties && typeof feature.properties === 'object' ? feature.properties : {};
+  const sourceHint = String(props.heightSource || props.clearanceSource || props.source || props.kind || '').toLowerCase();
+  const explicitSource = ['clearance', 'tag', 'measured', 'levels', 'building:levels', 'estimated']
+    .includes(sourceHint)
+    ? sourceHint
+    : null;
   const candidates = [
     ['clearanceHeight', 'clearance'],
     ['clearance_height', 'clearance'],
@@ -71,7 +76,12 @@ export function getFeatureHeightInfo(feature, fallback = DEFAULT_OBSTACLE_HEIGHT
   ];
   for (const [key, source] of candidates) {
     const h = normalizeHeight(props[key]);
-    if (h != null) return { value: h, source, key };
+    if (h != null) {
+      const derivedProxyHeight = source === 'tag'
+        && ['height', 'h', 'H', 'z', 'alt'].includes(key)
+        && ['yolo', 'streetview', 'street_view', 'sv', 'perception'].some((s) => sourceHint.includes(s));
+      return { value: h, source: derivedProxyHeight ? 'estimated' : (explicitSource || source), key };
+    }
   }
   const levels = normalizeHeight(props['building:levels']);
   if (levels != null && levels > 0) return { value: levels * 3, source: 'levels', key: 'building:levels' };
@@ -86,6 +96,19 @@ export function heightClearanceMarginForSource(source) {
   if (source === 'clearance' || source === 'tag' || source === 'measured') return 0.25;
   if (source === 'levels' || source === 'building:levels') return 0.5;
   return 1.0;
+}
+
+export function isReliableOverheadClearanceSource(source) {
+  return source === 'clearance' || source === 'tag' || source === 'measured';
+}
+
+function hasConfirmedOverheadClearance(feature) {
+  const props = feature?.properties && typeof feature.properties === 'object' ? feature.properties : {};
+  return truthy(props.hardStop)
+    || truthy(props.confirmed)
+    || truthy(props.confirmedClearance)
+    || truthy(props.clearanceConfirmed)
+    || truthy(props.measuredClearance);
 }
 
 export function getVehicleEnvelope(stateOrConfig = {}, opts = {}) {
@@ -189,6 +212,9 @@ export function buildCollisionSolidSet({ buildings = [], maskEdits = {} } = {}) 
   deny.forEach((feature, index) => {
     const heightOnly = isHeightOnlyFeature(feature);
     const h = getFeatureHeightInfo(feature, heightOnly ? DEFAULT_OVERHEAD_CLEARANCE_M : DEFAULT_OBSTACLE_HEIGHT_M);
+    const clearanceReliable = heightOnly
+      ? (isReliableOverheadClearanceSource(h.source) || hasConfirmedOverheadClearance(feature))
+      : true;
     const solid = {
       id: featureId(feature, heightOnly ? 'overhead' : 'obstacle', index),
       role: heightOnly ? 'overhead' : 'obstacle',
@@ -196,6 +222,7 @@ export function buildCollisionSolidSet({ buildings = [], maskEdits = {} } = {}) 
       feature,
       heightM: h.value,
       heightSource: h.source,
+      clearanceReliable,
       heightOnly
     };
     if (heightOnly) overheadSolids.push(solid);
@@ -228,6 +255,7 @@ export function buildClearanceSolidReport({
   const corridor = routeCorridor(route, envelope.vehicleWidthM);
   const rows = [];
   let lowClearanceCount = 0;
+  let advisoryClearanceCount = 0;
   let nearRouteOverheadCount = 0;
   let minClearanceM = null;
 
@@ -236,11 +264,12 @@ export function buildClearanceSolidReport({
     const sourceMargin = heightClearanceMarginForSource(solid.heightSource);
     const required = envelope.physicalHeightM + sourceMargin;
     const margin = solid.heightM - required;
-    const status = margin >= 0 ? 'OK' : 'NG';
+    const status = margin >= 0 ? 'OK' : (solid.clearanceReliable ? 'NG' : 'ADVISORY');
     if (nearRoute) {
       nearRouteOverheadCount += 1;
       if (minClearanceM == null || margin < minClearanceM) minClearanceM = margin;
       if (status === 'NG') lowClearanceCount += 1;
+      else if (status === 'ADVISORY') advisoryClearanceCount += 1;
     }
     rows.push({
       id: solid.id,
@@ -248,6 +277,7 @@ export function buildClearanceSolidReport({
       label: solid.label,
       heightM: Number(solid.heightM.toFixed(2)),
       heightSource: solid.heightSource,
+      clearanceReliable: !!solid.clearanceReliable,
       requiredHeightM: Number(required.toFixed(2)),
       marginM: Number(margin.toFixed(2)),
       status,
@@ -257,8 +287,9 @@ export function buildClearanceSolidReport({
   }
 
   rows.sort((a, b) => {
+    const priority = (status) => status === 'NG' ? 0 : (status === 'ADVISORY' ? 1 : 2);
     if (a.nearRoute !== b.nearRoute) return a.nearRoute ? -1 : 1;
-    if (a.status !== b.status) return a.status === 'NG' ? -1 : 1;
+    if (a.status !== b.status) return priority(a.status) - priority(b.status);
     return a.marginM - b.marginM;
   });
 
@@ -269,8 +300,9 @@ export function buildClearanceSolidReport({
       overheadSolidCount: solidSet.overheadSolids.length,
       nearRouteOverheadCount,
       lowClearanceCount,
+      advisoryClearanceCount,
       minClearanceM: minClearanceM == null ? null : Number(minClearanceM.toFixed(2)),
-      status: lowClearanceCount > 0 ? 'NG' : 'OK',
+      status: lowClearanceCount > 0 ? 'NG' : (advisoryClearanceCount > 0 ? 'ADVISORY' : 'OK'),
       vehicleHeightM: envelope.vehicleHeightM,
       cargoStackHeightM: envelope.cargoStackHeightM,
       requiredHeightM: envelope.requiredHeightM

@@ -126,6 +126,37 @@ def do_annotate() -> None:
             proc.kill()
 
 
+def do_yolo_annotate() -> None:
+    """Open the YOLO bounding-box label UI."""
+
+    import webbrowser
+
+    url = "http://127.0.0.1:8012/yolo/ui"
+    print("\nYOLO要素ラベル作成ツールを起動します。")
+    print("流れ: 地図で範囲を選ぶ -> 10〜30タイル出力 or 1枚取得 -> 箱/多角形で修正 -> 9)でYOLO学習")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "road_seg.server:app", "--port", "8012"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        if _wait_health("http://127.0.0.1:8012"):
+            print(f"ブラウザを開きます: {url}")
+            webbrowser.open(url)
+        else:
+            print("サーバ起動確認に失敗しました。手動で開いてください: " + url)
+        try:
+            input("\n作業が終わったら Enter を押してください...")
+        except EOFError:
+            pass
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=8)
+        except Exception:
+            proc.kill()
+
+
 def do_train_mixed() -> None:
     print("\n手動修正データ + 弱教師データで道路面モデルを継続学習します。")
     arch = _ask("モデル(unet/deeplabv3plus)", "unet")
@@ -154,11 +185,48 @@ def do_train_manual_only() -> None:
     _pause()
 
 
+def do_train_yolo() -> None:
+    print("\n航空写真/地図要素のYOLOモデルを学習します。")
+    print("既定は segment（多角形/マスク）。箱検出だけ試す場合は detect を選びます。")
+    task = _ask("タスク(detect/segment)", "segment").lower()
+    if task not in ("detect", "segment"):
+        task = "segment"
+    model_default = "yolo11n-seg.pt" if task == "segment" else "yolo11n.pt"
+    model = _ask("初期YOLOモデル", model_default)
+    ep = int(float(_ask("エポック数", 80)))
+    imgsz = int(float(_ask("画像サイズ", 640)))
+    batch = _ask("バッチ(auto または整数)", "auto")
+    val_ratio = float(_ask("検証データ比率", 0.2))
+    cmd = [
+        sys.executable,
+        "-m",
+        "road_seg.train_yolo",
+        "--task",
+        task,
+        "--model",
+        model,
+        "--epochs",
+        str(ep),
+        "--imgsz",
+        str(imgsz),
+        "--batch",
+        str(batch),
+        "--val-ratio",
+        str(val_ratio),
+    ]
+    subprocess.run(cmd)
+    _pause()
+
+
 def do_stats() -> None:
     from . import dataset
+    from . import yolo_dataset
 
     print("\n----- 教師データ統計 -----")
-    print(json.dumps(dataset.stats(), ensure_ascii=False, indent=2))
+    print(json.dumps({
+        "roadSurface": dataset.stats(),
+        "yoloElements": yolo_dataset.stats(),
+    }, ensure_ascii=False, indent=2))
     _pause()
 
 
@@ -174,6 +242,8 @@ MENU = """
   5) 学習                  手動修正 + 弱教師データで継続学習
   6) 手動データだけ学習    dataset/images + masks のみ
   7) 教師データ統計        件数・モデル情報を表示
+  8) YOLOラベル作成        少量タイル出力 -> 箱/多角形で修正
+  9) YOLO学習              dataset_yolo で detect/segment 学習
   0) 終了
 """
 
@@ -187,6 +257,8 @@ def main() -> int:
         "5": do_train_mixed,
         "6": do_train_manual_only,
         "7": do_stats,
+        "8": do_yolo_annotate,
+        "9": do_train_yolo,
     }
     while True:
         print(MENU)

@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YOLO要素ラベル作成 - road_seg</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root {
+    --bg: #10151b;
+    --panel: #17202a;
+    --panel2: #0d1319;
+    --line: #2c3b49;
+    --fg: #edf2f7;
+    --muted: #aeb8c2;
+    --accent: #2f81f7;
+    --danger: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Segoe UI", Meiryo, sans-serif; background: var(--bg); color: var(--fg); }
+  #app { display: flex; height: 100%; min-width: 1040px; }
+  #left { flex: 1; position: relative; min-width: 480px; }
+  #map { position: absolute; inset: 0; }
+  #bar {
+    position: absolute;
+    z-index: 1000;
+    top: 10px;
+    left: 10px;
+    right: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    background: rgba(23, 32, 42, .94);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  button, select { font: inherit; }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--line);
+    background: #243241;
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 7px 11px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { border-color: #7f1d1d; color: #ffd7d4; }
+  button.active { outline: 2px solid var(--accent); }
+  button:disabled { opacity: .55; cursor: wait; }
+  select {
+    background: #243241;
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px;
+  }
+  .hint { font-size: 12px; color: var(--muted); }
+  .stat { margin-left: auto; display: flex; gap: 10px; font-size: 12px; color: var(--muted); }
+  .stat b { color: var(--fg); }
+  #editor {
+    width: min(60vw, 980px);
+    max-width: 980px;
+    min-width: 560px;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+  }
+  #editor.collapsed { width: 0; min-width: 0; overflow: hidden; border-left: 0; }
+  #editorHead {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #classBar {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+    gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .classBtn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    justify-content: flex-start;
+    min-height: 34px;
+    padding: 6px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .classBtn.active { outline: 2px solid var(--accent); }
+  .swatch { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; border: 1px solid rgba(255,255,255,.35); }
+  #canvasWrap {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 12px;
+    background: var(--panel2);
+  }
+  #empty {
+    margin: 20px;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  #stage {
+    position: relative;
+    line-height: 0;
+    box-shadow: 0 0 0 1px var(--line);
+    flex: 0 0 auto;
+    max-width: none;
+  }
+  #stage canvas { display: block; position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; }
+  #imgCanvas { position: static; }
+  #boxCanvas { cursor: crosshair; touch-action: none; }
+  #meta { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #toast {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0b2a12;
+    border: 1px solid #1f7a34;
+    color: #c7f0d0;
+    padding: 8px 14px;
+    border-radius: 8px;
+    z-index: 2000;
+    display: none;
+    max-width: 80vw;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="map"></div>
+    <div id="bar">
+      <button id="fetchBtn" class="primary">この範囲を取得</button>
+      <button id="exportTilesBtn">この範囲をタイル出力</button>
+      <button id="nextTileBtn">未修正タイルを開く</button>
+      <label class="hint">枚数
+        <select id="tileCount">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="30">30</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </label>
+      <label class="hint">画像
+        <select id="layer">
+          <option value="seamlessphoto" selected>航空写真</option>
+          <option value="ort">オルソ</option>
+          <option value="std">標準地図</option>
+        </select>
+      </label>
+      <label class="hint">ズーム
+        <select id="zoom">
+          <option value="18" selected>18 高精細</option>
+          <option value="17">17 広め</option>
+        </select>
+      </label>
+      <span class="hint">1タイル単位で少量出力し、必要なものを多角形で直してYOLO-segに流します。</span>
+      <span class="stat">
+        <span>画像 <b id="sampleCount">-</b></span>
+        <span>箱 <b id="boxCount">-</b></span>
+        <span>多角形 <b id="segmentCount">-</b></span>
+        <span>未修正 <b id="unreviewedCount">-</b></span>
+      </span>
+    </div>
+  </div>
+
+  <div id="editor" class="collapsed">
+    <div id="editorHead">
+      <button id="saveBtn" class="primary">保存してYOLO教師データ化</button>
+      <button id="predictBtn">学習済み検出</button>
+      <button id="toolBoxBtn" class="active">箱</button>
+      <button id="toolPolyBtn">多角形</button>
+      <button id="finishPolyBtn">多角形確定</button>
+      <button id="undoPointBtn">点を戻す</button>
+      <button id="deleteBtn" class="danger">選択を削除</button>
+      <button id="clearBtn">全削除</button>
+      <button id="zoomOutBtn">縮小</button>
+      <button id="zoomResetBtn">100%</button>
+      <button id="zoomInBtn">拡大</button>
+      <span class="hint" id="editZoomLabel">100%</span>
+      <button id="closeBtn">閉じる</button>
+      <span class="hint" id="meta">未取得</span>
+    </div>
+    <div id="classBar"></div>
+    <div id="canvasWrap">
+      <div id="empty">左の地図で対象範囲まで移動し、「この範囲を取得」または「この範囲をタイル出力」を押してください。多角形ツールは点を打って「多角形確定」で保存対象になります。</div>
+      <div id="stage" style="display:none">
+        <canvas id="imgCanvas"></canvas>
+        <canvas id="boxCanvas"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API = location.origin;
+let state = {
+  id: null,
+  existing: false,
+  width: 0,
+  height: 0,
+  bbox: null,
+  zoom: 18,
+  layer: 'seamlessphoto',
+  scale: 1,
+  classes: [],
+  activeClass: 0,
+  tool: 'box',
+  boxes: [],
+  polygons: [],
+  selected: null,
+  drawing: false,
+  start: null,
+  current: null,
+  draftPoints: [],
+};
+
+const map = L.map('map', { center: [35.681236, 139.767125], zoom: 17 });
+let tileLayer = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg', {
+  maxZoom: 19,
+  maxNativeZoom: 18,
+  attribution: '国土地理院',
+}).addTo(map);
+
+const layerUrls = {
+  seamlessphoto: 'https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg',
+  ort: 'https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/{y}.jpg',
+  std: 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png',
+};
+
+document.getElementById('layer').addEventListener('change', () => {
+  const value = document.getElementById('layer').value;
+  if (tileLayer) map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(layerUrls[value], { maxZoom: 19, maxNativeZoom: 18, attribution: '国土地理院' }).addTo(map);
+});
+
+const imgCanvas = document.getElementById('imgCanvas');
+const boxCanvas = document.getElementById('boxCanvas');
+const imgCtx = imgCanvas.getContext('2d');
+const boxCtx = boxCanvas.getContext('2d');
+
+function toast(message, warn = false) {
+  const el = document.getElementById('toast');
+  el.textContent = message;
+  el.style.display = 'block';
+  el.style.background = warn ? '#332200' : '#0b2a12';
+  el.style.borderColor = warn ? '#8f6500' : '#1f7a34';
+  setTimeout(() => { el.style.display = 'none'; }, 2800);
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function setScale(next) {
+  state.scale = clamp(next, 0.45, 8);
+  const stage = document.getElementById('stage');
+  if (state.width && state.height) {
+    stage.style.width = `${Math.round(state.width * state.scale)}px`;
+    stage.style.height = `${Math.round(state.height * state.scale)}px`;
+  }
+  document.getElementById('editZoomLabel').textContent = `${Math.round(state.scale * 100)}%`;
+  drawBoxes();
+}
+
+function classDef(id) {
+  return state.classes.find((c) => c.id === id) || state.classes[0] || { color: '#ffffff', label: '未分類' };
+}
+
+function renderClassBar() {
+  const bar = document.getElementById('classBar');
+  bar.innerHTML = '';
+  for (const c of state.classes) {
+    const btn = document.createElement('button');
+    btn.className = 'classBtn';
+    btn.classList.toggle('active', c.id === state.activeClass);
+    btn.title = c.description || c.label;
+    btn.innerHTML = `<span class="swatch" style="background:${c.color}"></span><span>${c.id}: ${c.label}</span>`;
+    btn.addEventListener('click', () => {
+      state.activeClass = c.id;
+      renderClassBar();
+    });
+    bar.appendChild(btn);
+  }
+}
+
+async function refreshStats() {
+  try {
+    const res = await fetch(`${API}/yolo/stats`);
+    const data = await res.json();
+    document.getElementById('sampleCount').textContent = data.samples ?? 0;
+    document.getElementById('boxCount').textContent = data.boxes ?? 0;
+    document.getElementById('segmentCount').textContent = data.segments ?? 0;
+    document.getElementById('unreviewedCount').textContent = data.unreviewedSamples ?? 0;
+  } catch (_err) {
+    document.getElementById('sampleCount').textContent = '?';
+    document.getElementById('boxCount').textContent = '?';
+    document.getElementById('segmentCount').textContent = '?';
+    document.getElementById('unreviewedCount').textContent = '?';
+  }
+}
+
+async function loadClasses() {
+  const res = await fetch(`${API}/yolo/classes`);
+  const data = await res.json();
+  state.classes = data.classes || [];
+  state.activeClass = state.classes[0]?.id ?? 0;
+  renderClassBar();
+}
+
+function pointerPos(ev) {
+  const rect = boxCanvas.getBoundingClientRect();
+  return {
+    x: clamp((ev.clientX - rect.left) * boxCanvas.width / rect.width, 0, boxCanvas.width),
+    y: clamp((ev.clientY - rect.top) * boxCanvas.height / rect.height, 0, boxCanvas.height),
+  };
+}
+
+function normalizedRect(a, b) {
+  const x1 = Math.min(a.x, b.x);
+  const y1 = Math.min(a.y, b.y);
+  const x2 = Math.max(a.x, b.x);
+  const y2 = Math.max(a.y, b.y);
+  return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+}
+
+function pointInPolygon(point, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const pi = points[i];
+    const pj = points[j];
+    const intersect = ((pi.y > point.y) !== (pj.y > point.y))
+      && (point.x < (pj.x - pi.x) * (point.y - pi.y) / ((pj.y - pi.y) || 1e-9) + pi.x);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function hitTest(point) {
+  for (let i = state.boxes.length - 1; i >= 0; i -= 1) {
+    const b = state.boxes[i];
+    if (point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h) {
+      return { type: 'box', index: i };
+    }
+  }
+  for (let i = state.polygons.length - 1; i >= 0; i -= 1) {
+    if (pointInPolygon(point, state.polygons[i].points || [])) return { type: 'poly', index: i };
+  }
+  return null;
+}
+
+function isSelected(type, index) {
+  return state.selected && state.selected.type === type && state.selected.index === index;
+}
+
+function drawLabel(ctx, anchor, classId, color, selected) {
+  const c = classDef(classId);
+  const text = `${classId}: ${c.label || c.name}`;
+  ctx.font = '13px "Segoe UI", Meiryo, sans-serif';
+  const metrics = ctx.measureText(text);
+  const padX = 5;
+  const h = 20;
+  const x = anchor.x;
+  const y = Math.max(0, anchor.y - h);
+  ctx.fillStyle = selected ? '#ffffff' : color;
+  ctx.globalAlpha = selected ? 0.96 : 0.9;
+  ctx.fillRect(x, y, metrics.width + padX * 2, h);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = selected ? '#111820' : '#071018';
+  ctx.fillText(text, x + padX, y + 14);
+}
+
+function drawBoxes() {
+  if (!state.width || !state.height) return;
+  boxCtx.clearRect(0, 0, state.width, state.height);
+  for (let i = 0; i < state.polygons.length; i += 1) {
+    const p = state.polygons[i];
+    const pts = p.points || [];
+    if (pts.length < 3) continue;
+    const c = classDef(p.classId);
+    const selected = isSelected('poly', i);
+    boxCtx.save();
+    boxCtx.strokeStyle = c.color || '#ffffff';
+    boxCtx.lineWidth = selected ? 4 : 2;
+    boxCtx.setLineDash(selected ? [] : [8, 4]);
+    boxCtx.beginPath();
+    boxCtx.moveTo(pts[0].x, pts[0].y);
+    for (let j = 1; j < pts.length; j += 1) boxCtx.lineTo(pts[j].x, pts[j].y);
+    boxCtx.closePath();
+    boxCtx.stroke();
+    boxCtx.globalAlpha = selected ? 0.18 : 0.10;
+    boxCtx.fillStyle = c.color || '#ffffff';
+    boxCtx.fill();
+    boxCtx.restore();
+    const anchor = pts.reduce((best, cur) => (cur.y < best.y ? cur : best), pts[0]);
+    drawLabel(boxCtx, anchor, p.classId, c.color || '#ffffff', selected);
+  }
+  for (let i = 0; i < state.boxes.length; i += 1) {
+    const b = state.boxes[i];
+    const c = classDef(b.classId);
+    const selected = isSelected('box', i);
+    boxCtx.save();
+    boxCtx.strokeStyle = c.color || '#ffffff';
+    boxCtx.lineWidth = selected ? 4 : 2;
+    boxCtx.setLineDash(selected ? [] : [8, 4]);
+    boxCtx.strokeRect(b.x, b.y, b.w, b.h);
+    boxCtx.globalAlpha = selected ? 0.16 : 0.09;
+    boxCtx.fillStyle = c.color || '#ffffff';
+    boxCtx.fillRect(b.x, b.y, b.w, b.h);
+    boxCtx.restore();
+    drawLabel(boxCtx, b, b.classId, c.color || '#ffffff', selected);
+  }
+  if (state.drawing && state.start && state.current) {
+    const r = normalizedRect(state.start, state.current);
+    const c = classDef(state.activeClass);
+    boxCtx.save();
+    boxCtx.strokeStyle = c.color || '#ffffff';
+    boxCtx.lineWidth = 3;
+    boxCtx.strokeRect(r.x, r.y, r.w, r.h);
+    boxCtx.globalAlpha = 0.12;
+    boxCtx.fillStyle = c.color || '#ffffff';
+    boxCtx.fillRect(r.x, r.y, r.w, r.h);
+    boxCtx.restore();
+  }
+  if (state.draftPoints.length) {
+    const c = classDef(state.activeClass);
+    boxCtx.save();
+    boxCtx.strokeStyle = c.color || '#ffffff';
+    boxCtx.fillStyle = c.color || '#ffffff';
+    boxCtx.lineWidth = 3;
+    boxCtx.beginPath();
+    boxCtx.moveTo(state.draftPoints[0].x, state.draftPoints[0].y);
+    for (let i = 1; i < state.draftPoints.length; i += 1) {
+      boxCtx.lineTo(state.draftPoints[i].x, state.draftPoints[i].y);
+    }
+    if (state.current && state.tool === 'poly') boxCtx.lineTo(state.current.x, state.current.y);
+    boxCtx.stroke();
+    for (const p of state.draftPoints) {
+      boxCtx.beginPath();
+      boxCtx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      boxCtx.fill();
+    }
+    boxCtx.restore();
+  }
+}
+
+function openEditor(data) {
+  state.id = data.id;
+  state.existing = Boolean(data.existing);
+  state.width = data.width;
+  state.height = data.height;
+  state.bbox = data.bbox;
+  state.zoom = data.zoom;
+  state.layer = data.layer;
+  state.boxes = Array.isArray(data.boxes) ? data.boxes : [];
+  state.polygons = Array.isArray(data.polygons) ? data.polygons.map((poly) => ({
+    classId: poly.classId,
+    points: (poly.points || []).map((p) => Array.isArray(p) ? { x: Number(p[0]), y: Number(p[1]) } : { x: Number(p.x), y: Number(p.y) })
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y)),
+  })).filter((poly) => poly.points.length >= 3) : [];
+  state.selected = null;
+  state.start = null;
+  state.current = null;
+  state.draftPoints = [];
+  [imgCanvas, boxCanvas].forEach((canvas) => {
+    canvas.width = state.width;
+    canvas.height = state.height;
+  });
+  document.getElementById('editor').classList.remove('collapsed');
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('stage').style.display = 'block';
+  document.getElementById('stage').style.position = 'relative';
+  document.getElementById('meta').textContent =
+    `${state.existing ? '既存' : '新規'} ${state.width}x${state.height}px z${state.zoom || '-'} ${state.layer || '-'}`;
+  setScale(1);
+  const img = new Image();
+  img.onload = () => {
+    imgCtx.clearRect(0, 0, state.width, state.height);
+    imgCtx.drawImage(img, 0, 0);
+    drawBoxes();
+  };
+  img.src = data.image;
+  if (data.missingTiles) {
+    toast(`タイル欠落: ${data.missingTiles}枚。黒い領域はラベルしないでください。`, true);
+  }
+}
+
+document.getElementById('fetchBtn').addEventListener('click', async () => {
+  const bounds = map.getBounds();
+  const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
+  const zoom = parseInt(document.getElementById('zoom').value, 10);
+  const layer = document.getElementById('layer').value;
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  btn.textContent = '取得中...';
+  try {
+    const res = await fetch(`${API}/yolo/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox, zoom, layer }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    openEditor(await res.json());
+  } catch (err) {
+    toast(`取得失敗: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'この範囲を取得';
+  }
+});
+
+document.getElementById('exportTilesBtn').addEventListener('click', async () => {
+  const bounds = map.getBounds();
+  const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
+  const zoom = parseInt(document.getElementById('zoom').value, 10);
+  const layer = document.getElementById('layer').value;
+  const maxTiles = parseInt(document.getElementById('tileCount').value, 10) || 20;
+  const btn = document.getElementById('exportTilesBtn');
+  btn.disabled = true;
+  btn.textContent = '出力中...';
+  try {
+    const res = await fetch(`${API}/yolo/export_tiles`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox, zoom, layer, maxTiles }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    toast(`${data.exported}タイル出力しました（欠落 ${data.missingTiles || 0}）`);
+    await refreshStats();
+  } catch (err) {
+    toast(`タイル出力失敗: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'この範囲をタイル出力';
+  }
+});
+
+document.getElementById('nextTileBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('nextTileBtn');
+  btn.disabled = true;
+  btn.textContent = '読込中...';
+  try {
+    const res = await fetch(`${API}/yolo/next_unreviewed`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    openEditor(await res.json());
+  } catch (err) {
+    toast(`未修正タイルなし: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '未修正タイルを開く';
+  }
+});
+
+function setTool(tool) {
+  state.tool = tool;
+  state.drawing = false;
+  state.start = null;
+  state.current = null;
+  if (tool !== 'poly') state.draftPoints = [];
+  document.getElementById('toolBoxBtn').classList.toggle('active', tool === 'box');
+  document.getElementById('toolPolyBtn').classList.toggle('active', tool === 'poly');
+  drawBoxes();
+}
+
+document.getElementById('toolBoxBtn').addEventListener('click', () => setTool('box'));
+document.getElementById('toolPolyBtn').addEventListener('click', () => setTool('poly'));
+
+function finishPolygon() {
+  if (state.draftPoints.length < 3) {
+    toast('多角形は3点以上必要です。', true);
+    return;
+  }
+  state.polygons.push({ classId: state.activeClass, points: state.draftPoints.map((p) => ({ x: p.x, y: p.y })) });
+  state.selected = { type: 'poly', index: state.polygons.length - 1 };
+  state.draftPoints = [];
+  state.current = null;
+  drawBoxes();
+}
+
+document.getElementById('finishPolyBtn').addEventListener('click', finishPolygon);
+document.getElementById('undoPointBtn').addEventListener('click', () => {
+  if (state.draftPoints.length) state.draftPoints.pop();
+  drawBoxes();
+});
+
+function appendPredictions(data) {
+  const predBoxes = Array.isArray(data.boxes) ? data.boxes.map((b) => ({
+    classId: Number(b.classId),
+    x: Number(b.x),
+    y: Number(b.y),
+    w: Number(b.w),
+    h: Number(b.h),
+    confidence: Number(b.confidence || 0),
+  })).filter((b) => Number.isFinite(b.classId) && Number.isFinite(b.x) && Number.isFinite(b.y)
+    && Number.isFinite(b.w) && Number.isFinite(b.h) && b.w > 1 && b.h > 1) : [];
+  const predPolys = Array.isArray(data.polygons) ? data.polygons.map((poly) => ({
+    classId: Number(poly.classId),
+    confidence: Number(poly.confidence || 0),
+    points: (poly.points || []).map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y)),
+  })).filter((poly) => Number.isFinite(poly.classId) && poly.points.length >= 3) : [];
+  state.boxes.push(...predBoxes);
+  state.polygons.push(...predPolys);
+  state.selected = null;
+  drawBoxes();
+  toast(`検出を追加: ${predBoxes.length}箱 / ${predPolys.length}多角形`);
+}
+
+document.getElementById('predictBtn').addEventListener('click', async () => {
+  if (!state.id) {
+    toast('先にタイルを開いてください。', true);
+    return;
+  }
+  const btn = document.getElementById('predictBtn');
+  btn.disabled = true;
+  btn.textContent = '検出中...';
+  try {
+    const res = await fetch(`${API}/yolo/predict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: state.id, conf: 0.25, imgsz: 640 }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    appendPredictions(await res.json());
+  } catch (err) {
+    toast(`検出できません: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '学習済み検出';
+  }
+});
+
+boxCanvas.addEventListener('pointerdown', (ev) => {
+  if (!state.id) return;
+  boxCanvas.setPointerCapture(ev.pointerId);
+  const pos = pointerPos(ev);
+  if (state.tool === 'poly') {
+    const hit = hitTest(pos);
+    if (hit && !ev.shiftKey && !state.draftPoints.length) {
+      state.selected = hit;
+      const item = hit.type === 'box' ? state.boxes[hit.index] : state.polygons[hit.index];
+      state.activeClass = item.classId;
+      renderClassBar();
+      drawBoxes();
+      return;
+    }
+    state.draftPoints.push(pos);
+    state.current = pos;
+    state.selected = null;
+    if (ev.detail >= 2 && state.draftPoints.length >= 3) finishPolygon();
+    drawBoxes();
+    return;
+  }
+  const hit = hitTest(pos);
+  if (hit && !ev.shiftKey) {
+    state.selected = hit;
+    const item = hit.type === 'box' ? state.boxes[hit.index] : state.polygons[hit.index];
+    state.activeClass = item.classId;
+    renderClassBar();
+    drawBoxes();
+    return;
+  }
+  state.drawing = true;
+  state.start = pos;
+  state.current = pos;
+  state.selected = null;
+  drawBoxes();
+});
+
+boxCanvas.addEventListener('pointermove', (ev) => {
+  if (state.tool === 'poly' && state.draftPoints.length) {
+    state.current = pointerPos(ev);
+  } else if (state.drawing) {
+    state.current = pointerPos(ev);
+  } else {
+    return;
+  }
+  drawBoxes();
+});
+
+window.addEventListener('pointerup', () => {
+  if (state.tool !== 'box' || !state.drawing || !state.start || !state.current) return;
+  const r = normalizedRect(state.start, state.current);
+  state.drawing = false;
+  state.start = null;
+  state.current = null;
+  if (r.w >= 4 && r.h >= 4) {
+    state.boxes.push({ classId: state.activeClass, x: r.x, y: r.y, w: r.w, h: r.h });
+    state.selected = { type: 'box', index: state.boxes.length - 1 };
+  }
+  drawBoxes();
+});
+
+document.getElementById('deleteBtn').addEventListener('click', () => {
+  if (!state.selected) return;
+  if (state.selected.type === 'box') state.boxes.splice(state.selected.index, 1);
+  if (state.selected.type === 'poly') state.polygons.splice(state.selected.index, 1);
+  state.selected = null;
+  drawBoxes();
+});
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  state.boxes = [];
+  state.polygons = [];
+  state.draftPoints = [];
+  state.current = null;
+  state.selected = null;
+  drawBoxes();
+});
+
+document.getElementById('zoomOutBtn').addEventListener('click', () => setScale(state.scale / 1.25));
+document.getElementById('zoomResetBtn').addEventListener('click', () => setScale(1));
+document.getElementById('zoomInBtn').addEventListener('click', () => setScale(state.scale * 1.25));
+document.getElementById('closeBtn').addEventListener('click', () => document.getElementById('editor').classList.add('collapsed'));
+document.getElementById('canvasWrap').addEventListener('wheel', (ev) => {
+  if (!ev.ctrlKey) return;
+  ev.preventDefault();
+  setScale(state.scale * (ev.deltaY < 0 ? 1.12 : 1 / 1.12));
+}, { passive: false });
+
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Delete' || ev.key === 'Backspace') {
+    if (state.selected) {
+      if (state.selected.type === 'box') state.boxes.splice(state.selected.index, 1);
+      if (state.selected.type === 'poly') state.polygons.splice(state.selected.index, 1);
+      state.selected = null;
+      drawBoxes();
+    } else if (state.draftPoints.length) {
+      state.draftPoints.pop();
+      drawBoxes();
+    }
+  }
+  if (ev.key === 'Enter' && state.tool === 'poly' && state.draftPoints.length) finishPolygon();
+  if (ev.key === 'Escape' && state.tool === 'poly') {
+    state.draftPoints = [];
+    state.current = null;
+    drawBoxes();
+  }
+  const n = Number(ev.key);
+  if (Number.isInteger(n) && state.classes.some((c) => c.id === n)) {
+    state.activeClass = n;
+    if (state.selected?.type === 'box') state.boxes[state.selected.index].classId = n;
+    if (state.selected?.type === 'poly') state.polygons[state.selected.index].classId = n;
+    renderClassBar();
+    drawBoxes();
+  }
+});
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  if (!state.id) {
+    toast('先に範囲を取得してください。', true);
+    return;
+  }
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    const endpoint = state.existing ? 'update' : 'save';
+    const res = await fetch(`${API}/yolo/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: state.id,
+        width: state.width,
+        height: state.height,
+        boxes: state.boxes,
+        polygons: state.polygons,
+        meta: {
+          source: state.existing ? 'manual_reviewed_tile' : 'manual_yolo_aerial_elements',
+          bbox: state.bbox,
+          zoom: state.zoom,
+          layer: state.layer,
+          attribution: '国土地理院',
+          reviewedAt: new Date().toISOString(),
+          savedAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    toast(`保存しました: ${data.boxCount}箱 / ${data.polygonCount}多角形`);
+    state.id = null;
+    state.existing = false;
+    await refreshStats();
+  } catch (err) {
+    toast(`保存失敗: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存してYOLO教師データ化';
+  }
+});
+
+loadClasses().then(refreshStats).catch((err) => toast(`初期化失敗: ${err.message}`, true));
+</script>
+</body>
+</html>

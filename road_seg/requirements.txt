@@ -11,4 +11,5 @@ uvicorn>=0.29
 #   torchvision>=0.16               # torch/smp encoder 依存
 #   segmentation-models-pytorch     # U-Net / DeepLabV3+ など (MIT)
 # 公開学習済み道路抽出（手順1のゼロ学習評価）は各リポジトリの重み・推論コードを利用。
-# Ultralytics(YOLO, AGPL) は本パイプラインでは使わない。
+# --- YOLO要素検出の学習（任意） ---
+#   ultralytics                  # メニュー9) YOLO学習で使用。AGPL/商用ライセンス要確認。

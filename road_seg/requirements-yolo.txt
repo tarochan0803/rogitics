@@ -1,0 +1,7 @@
+# Optional YOLO training backend for:
+#   PYENV_VERSION=fa-env python -m road_seg.menu
+#   -> 9) YOLO学習
+#
+# Note: Ultralytics YOLO is license-sensitive for commercial deployment.
+# Keep trained weights isolated until the deployment license is decided.
+ultralytics>=8.3

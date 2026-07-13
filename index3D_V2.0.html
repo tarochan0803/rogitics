@@ -62,6 +62,8 @@
     window.PLATEAU_PREFER_LOD = 'lod1';
     window.PLATEAU_LOD_SCALE = 0.25;
     window.PLATEAU_OPACITY = 0.45;
+    window.PLATEAU_GROUND_ALIGN = true;
+    window.PLATEAU_Y_OFFSET = 0;
     window.TRUCK_TRAIL_MODE = 'footprint';
     window.TRUCK_TRAIL_RADIUS_M = 0.22;
     window.TRUCK_TRAIL_HEIGHT_M = 0.28;
@@ -275,8 +277,8 @@
           </div>
           </details>
           <label class="field road-alpha-field">
-            <span>PLATEAU高さ補正 <b id="plateauYOffsetValue">-3.5m</b></span>
-            <input id="plateauYOffset" type="range" min="-15" max="5" step="0.5" value="-3.5" />
+            <span>PLATEAU高さ微調整 <b id="plateauYOffsetValue">0.0m</b></span>
+            <input id="plateauYOffset" type="range" min="-20" max="20" step="0.5" value="0" />
           </label>
         </div>
         <label class="field">

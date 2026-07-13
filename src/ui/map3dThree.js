@@ -1,9 +1,10 @@
-﻿// map3dThree.js 窶・霆ｽ驥・D繝薙Η繝ｼ (Three.js)縲・esium 縺ｮ莉｣譖ｿ縲・// 險ｭ險井ｸ翫・隕∫せ: 蜴溽せ(originLL)繧貞崋螳壹＠縲∫ｷｯ蠎ｦ邨悟ｺｦ竊湛Z繝｡繝ｼ繝医Ν縺ｮ螟画鋤繧偵％縺ｮ繝｢繧ｸ繝･繝ｼ繝ｫ蜀・□縺代〒陦後≧縲・// coordinateSystem 繧ｷ繝ｳ繧ｰ繝ｫ繝医Φ縺ｫ萓晏ｭ倥＠縺ｪ縺・◆繧√∫ｵ瑚ｷｯ縺ｨ霆贋ｸ｡縺ｮ菴咲ｽｮ縺後★繧後↑縺・・//
-// 蠎ｧ讓咏ｳｻ: X=譚ｱ(m), Z=-蛹・m), Y=鬮倥＆(m)縲ょ慍髱｢縺ｯ XZ 蟷ｳ髱｢縲・
+// map3dThree.js — 軽量3Dビュー (Three.js)。Cesium の代替。
+// 座標系: X=東(m), Z=-匁Em), Y=高さ(m)。地面は XZ 平面、E
 import { store } from '../state.js';
 import { simulatePathPoses } from '../core/physics.js';
 import { coordinateSystem, safeDifference, safeUnion, turf } from '../utils/geo.js';
 import { buildRoadUnion } from '../core/feasibility.js';
+import { normalizeRouteForVehicle } from '../core/trajectoryPlanner.js';
 import { buildIntersectionWidening } from '../core/intersectionWidening.js';
 import { RUNTIME_CONFIG } from '../config.js';
 import { getMapInstance } from './map2d.js';
@@ -47,11 +48,11 @@ let buildingRoofMat = null;
 let buildingEdgeMat = null;
 let lateralCollisionFeatures = [];
 let lateralCollisionBboxes = [];
-let overheadCollisionFeatures = []; // heightOnly: 髮ｻ邱・逵区攸/蠎・↑縺ｩ鬆ｭ荳企囿螳ｳ迚ｩ
+let overheadCollisionFeatures = []; // heightOnly: 電線/看板/庇など頭上障害物
 let overheadCollisionBboxes = [];
 let overheadCollisionHeights = [];
 let collisionSolidMetrics = { lateral: 0, overhead: 0, lowClearance: 0 };
-let collisionAccum = 0;       // 謗･隗ｦ繝√ぉ繝・け髢灘ｼ輔″逕ｨ
+let collisionAccum = 0;       // 接触チェック間引き用
 let contactCount3d = 0;
 let safetyRoadSurfaceGeo = null;
 let safetyMonitor3D = null;
@@ -67,12 +68,15 @@ let autoDriveWasDanger = false;
 let routeXZ = [];
 let routeCum = [];
 let progressM = 0;            // 襍ｰ陦御ｽ咲ｽｮ(m)
-let drivePoses = [];          // 迚ｩ逅・Δ繝・Ν縺ｮ譎らｳｻ蛻・pose
+let drivePoses = [];          // 物理モデルの時系列 pose
 let driveTimeS = 0;
 let driveDurationS = 0;
 let drivePoseMode = false;
+let drivePlaybackRouteSource = 'raw';
+let drivePlaybackRouteMetrics = null;
 let autonomyReport3D = null;
 let autonomyCurrentSample = null;
+let autonomyCurrentLimit = null;
 let recoveryPlayback3D = null;
 let recoveryHandledKeys3D = new Set();
 let switchbackHandled3D = new Set();
@@ -357,7 +361,7 @@ export function isThree3DOpen() {
   return !!wrap && wrap.classList.contains('open');
 }
 
-// 笏笏 邱ｯ蠎ｦ邨悟ｺｦ 竊・XZ 繝｡繝ｼ繝医Ν・亥次轤ｹ蝗ｺ螳夲ｼ・笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+// ── 緯度経度 → XZ メートル（原点固定） ──────────────────────────
 function llToXZ(lat, lng) {
   const mPerLat = 111320;
   const mPerLng = 111320 * Math.cos((originLL?.lat || 0) * Math.PI / 180);
@@ -367,7 +371,7 @@ function llToXZ(lat, lng) {
   };
 }
 
-// XZ 繝｡繝ｼ繝医Ν 竊・邱ｯ蠎ｦ邨悟ｺｦ・域磁隗ｦ蛻､螳壹〒 turf 縺ｫ貂｡縺吶◆繧・ｼ・
+// XZ メートル → 緯度経度（接触判定で turf に渡すため）
 function xzToLL(x, z) {
   const mPerLat = 111320;
   const mPerLng = 111320 * Math.cos((originLL?.lat || 0) * Math.PI / 180);
@@ -408,28 +412,30 @@ function setSimTelemetry({ speedMS = 0, steeringAngle = 0, model = 'kinematic bi
   if (steerEl) steerEl.textContent = `${(Number(steeringAngle || 0) * 180 / Math.PI).toFixed(1)}deg`;
 }
 
-function setAutonomyTelemetry(sample = null, report = autonomyReport3D) {
+function setAutonomyTelemetry(sample = null, report = autonomyReport3D, limit = null) {
   const statusEl = document.getElementById('map3dAutonomyStatus');
   const sensorEl = document.getElementById('map3dSensorStatus');
   const summary = report?.summary || {};
-  const mode = sample?.mode || summary.status || 'standby';
+  const mode = limit?.mode || sample?.mode || summary.status || 'standby';
   if (statusEl) {
     const stop = Number(summary.stopEventCount || 0);
     const slow = Number(summary.slowEventCount || 0);
     statusEl.textContent = `${mode}${stop ? ` / stop ${stop}` : (slow ? ` / slow ${slow}` : '')}`;
     statusEl.classList.toggle('ng', mode === 'STOP');
-    statusEl.classList.toggle('warn', mode === 'SLOW' || mode === 'YIELD' || mode === 'SATURATED');
+    statusEl.classList.toggle('warn', ['SLOW', 'YIELD', 'SATURATED', 'ROAD_EDGE_CRAWL', 'MONITORED_CRAWL', 'RECOVER'].includes(mode));
   }
   if (sensorEl) {
     const clearance = sample?.forwardClearanceM ?? summary.minForwardClearanceM;
-    const allowed = sample?.allowedSpeedKmh ?? summary.minAllowedSpeedKmh;
+    const allowed = Number.isFinite(Number(limit?.allowedMS))
+      ? Number(limit.allowedMS) * 3.6
+      : (sample?.allowedSpeedKmh ?? summary.minAllowedSpeedKmh);
     const clearanceText = Number.isFinite(Number(clearance)) ? `${Number(clearance).toFixed(1)}m` : `${summary.sensorRangeM || '-'}m+`;
     const speedText = Number.isFinite(Number(allowed)) ? `${Number(allowed).toFixed(1)}km/h` : '-';
     sensorEl.textContent = `${clearanceText} / ${speedText}`;
   }
 }
 
-// 笏笏 繧ｷ繝ｼ繝ｳ蛻晄悄蛹・笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+// ── シーン初期匁E─────────────────────────────────────────────────────
 function ensureScene() {
   if (!THREE && typeof window !== 'undefined' && window.THREE) THREE = window.THREE;
   if (!THREE) { console.warn('[three3d] THREE is not ready'); return false; }
@@ -440,7 +446,7 @@ function ensureScene() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0f172a);
   scene.fog = new THREE.Fog(0x0f172a, 300, 1200);
-  if (typeof window !== 'undefined') window.__scene3d = scene; // 繝・ヰ繝・げ/讀懆ｨｼ逕ｨ縺ｫ繧ｷ繝ｼ繝ｳ繧貞・髢・
+  if (typeof window !== 'undefined') window.__scene3d = scene; // デバッグ/検証用にシーンを公開
   const w = container.clientWidth || 800;
   const h = container.clientHeight || 500;
   camera = new THREE.PerspectiveCamera(55, w / h, 0.5, 5000);
@@ -463,7 +469,7 @@ function ensureScene() {
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
-    controls.maxPolarAngle = Math.PI / 2.05; // 蝨ｰ髱｢繧医ｊ荳九↓蝗槭ｊ霎ｼ縺ｾ縺ｪ縺・    // 繝ｦ繝ｼ繧ｶ繝ｼ謫堺ｽ懊＠縺溘ｉ霑ｽ蠕薙ｒ隗｣髯､
+    controls.maxPolarAngle = Math.PI / 2.05; // 地面より下に回り込まない
     controls.addEventListener('start', () => { followCam = false; });
   }
 
@@ -471,7 +477,7 @@ function ensureScene() {
   return true;
 }
 
-// 笏笏 繧ｷ繝ｼ繝ｳ蜀・ｮｹ縺ｮ讒狗ｯ・笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+// ── シーン内容の構築 ─────────────────────────────────────────
 function clearMeshesByTag(tag) {
   if (!scene) return;
   const remove = [];
@@ -721,8 +727,8 @@ function muddyGroundTexture(canvas) {
   return canvas;
 }
 
-// 2D縺ｨ蜷檎ｳｻ邨ｱ縺ｮ陦帶弌繧ｿ繧､繝ｫ繧貞慍髱｢繝・け繧ｹ繝√Ε縺ｨ縺励※雋ｼ繧九・
-// Google 2D Tiles API 縺御ｽｿ縺医ｌ縺ｰGoogle陦帶弌縲∝､ｱ謨玲凾縺ｯGSI seamlessphoto縺ｸ繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ縲・
+// 2Dと同系統の衛星タイルを地面テクスチャとして貼る。
+// Google 2D Tiles API が使えればGoogle衛星、失敗時はGSI seamlessphotoへフォールバック、E
 async function addSatelliteGround() {
   if (!originLL) return false;
   const k = GROUND_TILE_RADIUS;
@@ -736,7 +742,7 @@ async function addSatelliteGround() {
   }
   if (stitched.loaded === 0) return false;
 
-  // 繧ｹ繝・ャ繝∫ｯ・峇縺ｮ蝨ｰ逅・｢・阜 竊・繝｡繝ｼ繝医Ν
+  // ステッチ範囲の地理境界 → メートル
   const westLon = _tileXToLon(stitched.cx - k, z);
   const eastLon = _tileXToLon(stitched.cx + k + 1, z);
   const northLat = _tileYToLat(stitched.cy - k, z);
@@ -1041,7 +1047,7 @@ function addCollisionSolids(solidSet, state) {
   }
   for (const solid of solidSet?.overheadSolids || []) {
     const h = Number(solid.heightM) || 0;
-    const ng = h < envelope.requiredHeightM;
+    const ng = solid.clearanceReliable !== false && h < envelope.requiredHeightM;
     if (ng) lowClearance++;
     overheadCount += addFlatFeatureAtHeight(solid.feature, h, 'overheadSolid', ng ? overheadNgMat : overheadOkMat);
   }
@@ -1092,6 +1098,43 @@ function maskSig3D(maskEdits) {
   return `a:${collect(edits.allow)}:d:${collect(edits.deny)}`;
 }
 
+function roundMetric(value, digits = 2) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const scale = 10 ** digits;
+  return Math.round(n * scale) / scale;
+}
+
+function buildPlaybackRouteForVehicle(route, state) {
+  drivePlaybackRouteSource = 'raw';
+  drivePlaybackRouteMetrics = null;
+  if (!Array.isArray(route) || route.length < 2) return route || [];
+
+  // 3D再生では確定済みの走行ルートだけを丸める。
+  // selectedRoadRoute や候補再採点を使うと、粗い選択線を再解釈して斜めに飛ぶ経路を作ることがある。
+  try {
+    const normalized = normalizeRouteForVehicle(route, state?.vehicleConfig || {});
+    if (Array.isArray(normalized) && normalized.length >= 2) {
+      drivePlaybackRouteSource = 'route-normalizer';
+      drivePlaybackRouteMetrics = {
+        inputPoints: route.length,
+        outputPoints: normalized.length,
+        pointGrowth: roundMetric(normalized.length / Math.max(1, route.length), 2)
+      };
+      return normalized;
+    }
+  } catch (e) {
+    console.warn('[three3d] playback route normalization failed, using raw route:', e?.message || e);
+  }
+
+  drivePlaybackRouteMetrics = {
+    inputPoints: route.length,
+    outputPoints: route.length,
+    reason: 'raw-route'
+  };
+  return route;
+}
+
 function isPolygonFeature(feature) {
   const type = feature?.geometry?.type;
   return type === 'Polygon' || type === 'MultiPolygon';
@@ -1137,7 +1180,7 @@ function getRoadSurfaceGeo(state) {
     Number(state?.vehicleConfig?.vehicleWidth ?? 0).toFixed(2),
     Number(state?.vehicleConfig?.widthMargin ?? 0).toFixed(2),
     maskSig3D(state?.maskEdits),
-    widthOverridesSig3D(state?.widthOverrides) // Phase2: 謇句虚蟷・ｸ頑嶌縺阪〒繧ｭ繝｣繝・す繝･繧堤┌蜉ｹ蛹悶＠3D霍ｯ髱｢繧貞叉譎よ峩譁ｰ
+    widthOverridesSig3D(state?.widthOverrides) // Phase2: 手動幅上書きでキャッシュを無効化し3D路面を即時更新
   ].join('|');
   if (sig === cachedRoadSurfaceSig) return cachedRoadSurfaceGeo;
 
@@ -1238,7 +1281,7 @@ function addRoadSurface(roadSurfaceGeo) {
   const geom = simplified?.geometry || simplified;
   if (!geom) return 0;
 
-  // Phase2讀懆ｨｼ逕ｨ: 繝ｬ繝ｳ繝繝ｪ繝ｳ繧ｰ縺励◆襍ｰ陦碁擇縺ｮ髱｢遨・鬆らせ謨ｰ繧定ｨ倬鹸・亥ｹ・ｸ頑嶌縺榊燕蠕後・豈碑ｼ・↓菴ｿ縺・ｼ・
+  // Phase2検証用: レンダリングした走行面の面積/頂点数を記録（幅上書き前後の比較に使う）
   try {
     lastRoadSurfaceMetrics.vertices = countGeoVertices(simplified);
     if (turf?.area) lastRoadSurfaceMetrics.areaM2 = Math.round(turf.area(simplified));
@@ -1496,7 +1539,7 @@ function addRoadEdgesFromSurface(roadSurfaceGeo) {
   return count;
 }
 
-// Phase2: 豁ｩ驕・霍ｯ閧ｩ縺ｮ邁｡譏薙Ξ繧､繝､繝ｼ・亥愛螳壹・逵溷､縺ｧ縺ｯ縺ｪ縺乗枚閼郁｡ｨ遉ｺ・・
+// Phase2: 歩道/路肩の簡易レイヤー（判定の真値ではなく文脈表示）
 function addSidewalks(sidewalks) {
   clearMeshesByTag('sidewalk');
   const arr = Array.isArray(sidewalks) ? sidewalks : [];
@@ -1525,7 +1568,7 @@ function addSidewalks(sidewalks) {
   return count;
 }
 
-// Phase2讀懆ｨｼ逕ｨ: 逶ｴ霑代↓謠冗判縺励◆襍ｰ陦碁擇縺ｮ髱｢遨・鬆らせ謨ｰ繧定ｿ斐☆
+// Phase2検証用: 直近に描画した走行面の面穁E頂点数を返す
 export function getRoadSurfaceMetrics() {
   return { ...lastRoadSurfaceMetrics };
 }
@@ -1540,7 +1583,7 @@ export function getAutonomyDriveMetrics() {
     ? 'RECOVER'
     : (recoveryBypassUntilM > (Number(progressM) || 0) + 0.25
       ? 'RECOVER'
-      : (autonomyCurrentSample?.mode || autonomyReport3D?.summary?.status || null));
+      : (autonomyCurrentLimit?.mode || autonomyCurrentSample?.mode || autonomyReport3D?.summary?.status || null));
   const currentSample = autonomyCurrentSample
     ? {
       sM: autonomyCurrentSample.sM ?? null,
@@ -1555,7 +1598,11 @@ export function getAutonomyDriveMetrics() {
       forwardClearanceM: autonomyCurrentSample.forwardClearanceM ?? null,
       blockerId: autonomyCurrentSample.blockerId ?? null,
       pathRadiusM: autonomyCurrentSample.pathRadiusM ?? null,
-      turnDeg: autonomyCurrentSample.turnDeg ?? null
+      effectivePathRadiusM: autonomyCurrentSample.effectivePathRadiusM ?? null,
+      turnDeg: autonomyCurrentSample.turnDeg ?? null,
+      intersectionRelaxed: autonomyCurrentSample.intersectionRelaxed ?? false,
+      intersectionCapRadiusM: autonomyCurrentSample.intersectionCapRadiusM ?? null,
+      intersectionCapDistanceM: autonomyCurrentSample.intersectionCapDistanceM ?? null
     }
     : null;
   return autonomyReport3D
@@ -1563,13 +1610,17 @@ export function getAutonomyDriveMetrics() {
       ...autonomyReport3D.summary,
       currentMode: liveMode,
       currentForwardClearanceM: autonomyCurrentSample?.forwardClearanceM ?? null,
-      currentAllowedSpeedKmh: autonomyCurrentSample?.allowedSpeedKmh ?? null,
+      currentAllowedSpeedKmh: Number.isFinite(Number(autonomyCurrentLimit?.allowedMS))
+        ? Math.round(Number(autonomyCurrentLimit.allowedMS) * 36) / 10
+        : (autonomyCurrentSample?.allowedSpeedKmh ?? null),
       currentSample,
       recoveryPlaybackCount: recoveryPlaybackCount3D,
       progressM: Math.round((Number(progressM) || 0) * 10) / 10,
       totalM: Math.round((Number(totalM) || 0) * 10) / 10,
       playing,
       drivePoseMode,
+      drivePlaybackRouteSource,
+      drivePlaybackRouteMetrics: drivePlaybackRouteMetrics ? { ...drivePlaybackRouteMetrics } : null,
       safety: getSafetyMonitorMetrics(),
       recoveryBypassUntilM: Math.round((Number(recoveryBypassUntilM) || 0) * 10) / 10,
       recoveryOffsetHoldM: Math.round((Number(recoveryOffsetHoldM) || 0) * 100) / 100
@@ -1585,6 +1636,9 @@ const HUD_MODE_STYLE = {
   SLOW: { label: '徐行', color: '#f59e0b' },
   YIELD: { label: '譲走', color: '#f97316' },
   SATURATED: { label: '操舵限界', color: '#f59e0b' },
+  ROAD_EDGE_CRAWL: { label: '監視徐行', color: '#f59e0b' },
+  MONITORED_CRAWL: { label: '監視徐行', color: '#f59e0b' },
+  RECOVER: { label: '復旧走行', color: '#a78bfa' },
   STOP: { label: '停止', color: '#ef4444' }
 };
 
@@ -1790,6 +1844,9 @@ function runSafetyMonitorTick({ pos, heading, state, speedMS, sample, limit, sim
   const inEndpointGrace = totalM > 0
     && (progressM < SAFETY_ENDPOINT_GRACE_M || progressM > totalM - SAFETY_ENDPOINT_GRACE_M);
   const footprint = truckFootprintFeatureForSafety(pos, heading, state?.vehicleConfig || {});
+  const hardForwardClearanceM = limit?.mode === 'STOP'
+    ? (sample?.forwardClearanceM ?? null)
+    : null;
   const result = safetyMonitor3D.push({
     turf,
     footprint,
@@ -1799,7 +1856,7 @@ function runSafetyMonitorTick({ pos, heading, state, speedMS, sample, limit, sim
     allowedMS: limit?.allowedMS,
     curveLimitMS,
     collision,
-    forwardClearanceM: sample?.forwardClearanceM ?? null,
+    forwardClearanceM: hardForwardClearanceM,
     simTimeS: safetySimTimeS,
     progressM,
     lat: ll.lat,
@@ -1823,6 +1880,9 @@ function runSafetyMonitorTick({ pos, heading, state, speedMS, sample, limit, sim
 
 export function getPlateauTilesMetrics() {
   const catalog = store.getState?.().plateauTileset || null;
+  const placement = (() => {
+    try { return plateauHandle?.getMetrics?.() || {}; } catch (_e) { return {}; }
+  })();
   return {
     active: !!plateauActive,
     loading: !!plateauLoadingKey,
@@ -1831,7 +1891,8 @@ export function getPlateauTilesMetrics() {
     catalog,
     disabled: !!(typeof window !== 'undefined' && window.PLATEAU_DISABLE),
     keepOsmBuildings: plateauKeepOsmBuildings(),
-    yOffsetM: Number.isFinite(Number(window.PLATEAU_Y_OFFSET)) ? Number(window.PLATEAU_Y_OFFSET) : -3.5
+    yOffsetM: Number.isFinite(Number(window.PLATEAU_Y_OFFSET)) ? Number(window.PLATEAU_Y_OFFSET) : 0,
+    ...placement
   };
 }
 function addAutonomySensorPreview(report) {
@@ -2128,12 +2189,14 @@ function autonomyPlaybackLimit(sample, nominalMS) {
   const allowedMS = Math.max(0, Number(sample.allowedSpeedMS) || 0);
   const cruiseMS = Math.max(0.6, Number(sample.cruiseSpeedMS) || nominalMS || 1);
   if (sample.mode === 'STOP' || allowedMS <= 0.05) {
-    if (!sample.blockerId) {
-      const crawlMS = Math.max(0.45, Math.min(cruiseMS, (Number(nominalMS) || cruiseMS) * 0.18));
+    const hardOverheadStop = sample.blockerRole === 'overhead';
+    if (!hardOverheadStop) {
+      const crawlFactor = sample.blockerId ? 0.16 : 0.20;
+      const crawlMS = Math.max(0.55, Math.min(cruiseMS, (Number(nominalMS) || cruiseMS) * crawlFactor));
       return {
         scale: Math.max(0.05, Math.min(1, crawlMS / cruiseMS)),
         allowedMS: crawlMS,
-        mode: 'ROAD_EDGE_CRAWL'
+        mode: sample.blockerId ? 'MONITORED_CRAWL' : 'ROAD_EDGE_CRAWL'
       };
     }
     if (isRecoveryBypassActive(sample)) {
@@ -2233,7 +2296,7 @@ function addRouteLine(simRoute) {
   const line = new THREE.Line(geo, mat);
   line.userData.tag = 'route';
   scene.add(line);
-  // 蟋狗せ繝ｻ邨らせ繝槭・繧ｫ繝ｼ
+  // 始点・終点マーカー
   const startMat = new THREE.MeshBasicMaterial({ color: 0x16a34a, transparent: true, opacity: 0.88 });
   const goalMat = new THREE.MeshBasicMaterial({ color: 0xd97706, transparent: true, opacity: 0.88 });
   const endpointGeo = new THREE.CylinderGeometry(1.25, 1.25, 0.08, 28);
@@ -2406,7 +2469,7 @@ function buildTruck(vehicleConfig, cargo) {
   truckGroup.add(body);
   truckBody = body;
 
-  // 繝ｯ繧､繝､繝ｼ繝輔Ξ繝ｼ繝霈ｪ驛ｭ
+  // ワイヤーフレーム輪郭
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(bodyGeo), new THREE.LineBasicMaterial({ color: 0x67e8f9 }));
   edges.position.copy(body.position);
   truckGroup.add(edges);
@@ -2425,7 +2488,7 @@ function buildTruck(vehicleConfig, cargo) {
 function placeTruckAt(x, z, headingRad) {
   if (!truckGroup) return;
   truckGroup.position.set(x, 0, z);
-  // 蜑肴婿(+Z local)繧帝ｲ陦梧婿蜷・(sin h, 0, -cos h)[譚ｱ,_,蛹余 縺ｫ蜷代￠繧・rotation.y縲・
+  // 前方(+Z local)を進行方吁E(sin h, 0, -cos h)[東,_,北] に向けめErotation.y、E
   truckGroup.rotation.y = Math.atan2(Math.sin(headingRad), -Math.cos(headingRad));
 }
 
@@ -2461,6 +2524,7 @@ function checkTruckSolidCollision(pos, headingRad, state) {
     for (let i = 0; i < overheadCollisionFeatures.length; i++) {
       const bb = overheadCollisionBboxes[i];
       if (bb && !bboxIntersects3D(fpb, bb)) continue;
+      if (overheadCollisionHeights[i]?.clearanceReliable === false) continue;
       const h = Number(overheadCollisionHeights[i]?.heightM);
       if (Number.isFinite(h) && h >= envelope.requiredHeightM) continue;
       try { if (turf.booleanIntersects(fp, overheadCollisionFeatures[i])) return true; } catch (e) { }
@@ -2953,10 +3017,12 @@ function beginCornerSwitchback(sample, vc) {
   markHandledSwitchbackZone(key, sM, resumeStationM);
   const plan = planKTurnPoses({ startPos, entryHeading, exitHeading, resumePos, vc });
   if (!plan) {
-    // 建物/障害物に当たらない切り返し軌道が存在しない → 違反する前に理由付き安全停止
-    console.info('[switchback] infeasible (no collision-clear trajectory)', { sM: Math.round(sM) });
-    triggerMrmStop3D('switchback_infeasible', { sM: Math.round(sM), planned: false });
-    return true;
+    // 建物/障害物に当たらない切り返し軌道が見つからない場合でも即MRMにはしない。
+    // planner側は swingSoftStop で徐行係数を掛けているため、そのまま監視徐行で
+    // アーク経路を進む（本当に通れないコーナーなら Safety Monitor の接触検出が
+    // 正直な位置でMRMを出す）。ゾーンはhandled済みなので多重試行はしない。
+    console.info('[switchback] infeasible plan -> continue in monitored crawl', { sM: Math.round(sM) });
+    return false;
   }
   recoveryBypassUntilM = Math.max(recoveryBypassUntilM, resumeStationM + 5);
   recoveryPlaybackCount3D += 1;
@@ -2987,7 +3053,7 @@ function beginCornerSwitchback(sample, vc) {
   return true;
 }
 
-// 隗貞ｺｦ繧呈怙遏ｭ蝗槭ｊ縺ｧ target 縺ｸ譛螟ｧ maxStep 縺縺題ｿ代▼縺代ｋ・域桃闊ｵ隗帝溷ｺｦ縺ｮ荳企剞・・
+// 角度を最短回りで target へ最大 maxStep だけ近づける（操舵角速度の上限）
 // 1b(c): ヘディングの最大変化角を車両連動で算出する。
 // 自転車モデルの最大旋回角速度 ω = |v|·tan(δmax)/wheelBase（rad/s）に dt を掛ける。
 // 低速でも収束するよう下限 0.6rad/s を設ける。
@@ -3095,7 +3161,7 @@ function advanceRecoveryPlayback(dt) {
   };
 }
 
-// 笏笏 螟夜ΚAPI 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+// ── 外部API ──────────────────────────────────────────────────────────
 export function openThree3D() {
   const wrap = document.getElementById('map3dWrap');
   if (!wrap) return false;
@@ -3144,8 +3210,8 @@ export function closeThree3D() {
   disposePlateauTiles();
 }
 
-// store 縺ｮ迴ｾ蝨ｨ迥ｶ諷九°繧牙ｻｺ迚ｩ繝ｻ邨瑚ｷｯ繧呈ｧ狗ｯ・
-// #5: 驕楢ｷｯ髱｢・・菴咏區・峨ｒ蟒ｺ迚ｩ繝輔ャ繝医・繝ｪ繝ｳ繝医°繧牙ｷｮ縺怜ｼ輔￥縲ょｮ悟・縺ｫ驕楢ｷｯ髱｢蜀・・蟒ｺ迚ｩ縺ｯ陦晉ｪ∝ｯｾ雎｡縺九ｉ螟悶☆縲・
+// store の現在状態から建物・経路を構築
+// #5: 道路面（+余白）を建物フットプリントから差し引く。完全に道路面内の建物は衝突対象から外す。
 function clipBuildingsByRoadSurface(buildings, roadSurfaceGeo, { marginM = 0.3 } = {}) {
   const turf = window.turf;
   const arr = Array.isArray(buildings) ? buildings : [];
@@ -3162,11 +3228,11 @@ function clipBuildingsByRoadSurface(buildings, roadSurfaceGeo, { marginM = 0.3 }
     if (t !== 'Polygon' && t !== 'MultiPolygon') { out.push(f); continue; }
     try {
       const diff = turf.difference(f, mask);
-      if (!diff || !diff.geometry) continue; // 蟒ｺ迚ｩ縺悟ｮ悟・縺ｫ驕楢ｷｯ髱｢蜀・竊・陦晉ｪ∝ｯｾ雎｡縺九ｉ髯､螟・      diff.id = f.id ?? f.properties?.id;
+      if (!diff || !diff.geometry) continue; // 建物が完全に道路面内 → 衝突対象から除外
       diff.properties = { ...(f.properties || {}) };
       out.push(diff);
     } catch (_e) {
-      out.push(f); // 蟾ｮ蛻・､ｱ謨玲凾縺ｯ蜈・ｽ｢迥ｶ繧剃ｿ晄戟
+      out.push(f); // 差分失敗時は元形状を保持
     }
   }
   return out;
@@ -3211,9 +3277,24 @@ function currentPlateauKey(state) {
   ].join(':');
 }
 
-// 蟒ｺ迚ｩ縺ｮ隕九◆逶ｮ繧・PLATEAU 3D Tiles・医≠繧後・・・ OSM・育┌縺代ｌ縺ｰ・峨〒逕ｨ諢上☆繧九・
-// 3d-tiles-renderer 縺ｯ蜍慕噪import・磯撼蜷梧悄・峨りｪｭ縺ｿ霎ｼ縺ｿ螳御ｺ・∪縺ｧ縺ｯ OSM 蟒ｺ迚ｩ繧定｡ｨ遉ｺ縺励・
-// 貅門ｙ縺ｧ縺肴ｬ｡隨ｬ OSM 繧呈ｶ医＠縺ｦ PLATEAU 繧ｿ繧､繝ｫ縺ｸ蟾ｮ縺玲崛縺医ｋ・医き繝舌・螟・螟ｱ謨玲凾縺ｯ OSM 縺ｮ縺ｾ縺ｾ・峨・
+function warmPlateauTiles(handle, seq, frames = 90) {
+  if (!handle || !renderer || !scene || !camera || typeof requestAnimationFrame !== 'function') return;
+  let count = 0;
+  const tick = () => {
+    if (seq !== plateauLoadSeq || handle !== plateauHandle) return;
+    try {
+      handle.update?.();
+      renderer.render(scene, camera);
+    } catch (_e) { /* best-effort warmup */ }
+    count += 1;
+    if (count < frames) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// 建物の見た目を PLATEAU 3D Tiles（あれば）/ OSM（無ければ）で用意する。
+// 3d-tiles-renderer は動的import（非同期）。読み込み完了までは OSM 建物を表示し、
+// 準備でき次第 OSM を消して PLATEAU タイルへ差し替える（カバー外/失敗時は OSM のまま）。
 function setupPlateauOrOsmBuildings(state) {
   if (typeof window !== 'undefined' && window.PLATEAU_DISABLE) {
     disposePlateauTiles();
@@ -3264,8 +3345,8 @@ function setupPlateauOrOsmBuildings(state) {
       return;
     }
     plateauLoadingKey = '';
-    if (!handle) return; // 譛ｪ蟇ｾ蠢・螟ｱ謨・竊・OSM 縺ｮ縺ｾ縺ｾ
-    // 邨瑚ｷｯ縺悟､峨ｏ縺｣縺ｦ蜴溽せ縺悟虚縺・※縺・◆繧臥ｴ譽・ｼ亥商縺・Μ繧ｯ繧ｨ繧ｹ繝茨ｼ・
+    if (!handle) return; // 未対忁E失敁EↁEOSM のまま
+    // 経路が変わって原点が動いていたら破棄（古いリクエスト）
     if (!originLL || originLL.lat !== reqOrigin.lat || originLL.lng !== reqOrigin.lng) {
       try { handle.dispose(); } catch (_e) {}
       return;
@@ -3276,6 +3357,7 @@ function setupPlateauOrOsmBuildings(state) {
     plateauLastStatus = { state: 'active', area: handle.area?.name || '', key };
     if (!plateauKeepOsmBuildings()) clearMeshesByTag('building');
     setBuildingStatusText(`PLATEAU 3D Tiles: ${handle.area?.name || ''} (translucent streaming)`);
+    warmPlateauTiles(handle, seq);
   }).catch((err) => {
     if (seq !== plateauLoadSeq) return;
     plateauLoadingKey = '';
@@ -3331,12 +3413,14 @@ export function renderSceneThree(state) {
   const turf = window.turf;
   lateralCollisionFeatures = (solidSet.lateralSolids || []).map((s) => s.feature).filter((f) => f?.geometry);
   lateralCollisionBboxes = lateralCollisionFeatures.map((f) => { try { return turf ? turf.bbox(f) : null; } catch (e) { return null; } });
-  overheadCollisionFeatures = (solidSet.overheadSolids || []).map((s) => s.feature).filter((f) => f?.geometry);
+  const overheadCollisionSolids = (solidSet.overheadSolids || []).filter((s) => s?.feature?.geometry);
+  overheadCollisionFeatures = overheadCollisionSolids.map((s) => s.feature);
   overheadCollisionBboxes = overheadCollisionFeatures.map((f) => { try { return turf ? turf.bbox(f) : null; } catch (e) { return null; } });
-  overheadCollisionHeights = (solidSet.overheadSolids || []).map((s) => ({
+  overheadCollisionHeights = overheadCollisionSolids.map((s) => ({
     id: s.id,
     heightM: s.heightM,
-    source: s.heightSource
+    source: s.heightSource,
+    clearanceReliable: s.clearanceReliable !== false
   }));
   contactCount3d = 0;
   collisionAccum = 0;
@@ -3376,7 +3460,7 @@ export function renderSceneThree(state) {
   setSimTelemetry({ speedMS: 0, steeringAngle: 0 });
   setAutonomyTelemetry(null, null);
 
-  // 繝医Λ繝・け繧貞ｧ狗せ縺ｫ驟咲ｽｮ
+  // トラックを始点に配置
   if (routeXZ.length >= 2) {
     const h0 = _routeHeadingAt(0);
     placeTruckAt(routeXZ[0].x, routeXZ[0].z, h0);
@@ -3477,9 +3561,15 @@ export function playThree3D(speedKmh = 18) {
   const route = state?.simRoute || [];
   if (route.length < 2) return;
 
+  // planner と物理再生は必ず同一の正規化経路（車両向けアーク付き）を評価する。
+  // 生simRouteをplannerに渡すと、90°折れ点の見かけ旋回半径・ステーション(sM)が
+  // 実走軌道とずれ、偽の切り返し推奨→K-turn不成立MRMになる（教師回帰で大量偽停止の主因）。
+  const playbackRoute = buildPlaybackRouteForVehicle(route, state);
+  const routeForDrive = (Array.isArray(playbackRoute) && playbackRoute.length >= 2) ? playbackRoute : route;
+
   try {
     autonomyReport3D = buildAutonomyDriveReport({
-      route,
+      route: routeForDrive,
       roads: state?.geoJsonDataSets || [],
       buildings: state?.buildingsGeoJSON || [],
       maskEdits: state?.maskEdits || {},
@@ -3489,6 +3579,7 @@ export function playThree3D(speedKmh = 18) {
       cruiseSpeedKmh: Number(speedKmh) || 18
     });
     autonomyCurrentSample = null;
+    autonomyCurrentLimit = null;
     addAutonomySensorPreview(autonomyReport3D);
     addRecoveryTrajectoryPreview(autonomyReport3D);
     refreshThreeDiagnostics(); // 項目5: ON 中の診断レイヤーを新しいレポートで更新
@@ -3496,15 +3587,17 @@ export function playThree3D(speedKmh = 18) {
   } catch (e) {
     autonomyReport3D = null;
     autonomyCurrentSample = null;
+    autonomyCurrentLimit = null;
     clearMeshesByTag('recoveryTrajectory');
     console.warn('[three3d] autonomy planner failed:', e?.message || e);
   }
 
-  // 迚ｩ逅・す繝溘Η繝ｬ繝ｼ繧ｷ繝ｧ繝ｳ霆瑚ｷ｡・亥ｾ瑚ｼｪ霆ｸ縺ｮ螳溯ｵｰ繝ｩ繧､繝ｳ + 譎る俣/騾溷ｺｦ/闊ｵ隗抵ｼ峨ｒ逕滓・
+  // 物理シミュレーション軌跡（後輪軸の実走ライン + 時間/速度/舵角）を生成
   let simPoses = null;
   try {
-    coordinateSystem.setOrigin(route[0].lat, route[0].lng);
-    const pathM = route.map((ll) => coordinateSystem.latLngToMeters(ll.lat, ll.lng));
+    const routeForPhysics = routeForDrive;
+    coordinateSystem.setOrigin(routeForPhysics[0].lat, routeForPhysics[0].lng);
+    const pathM = routeForPhysics.map((ll) => coordinateSystem.latLngToMeters(ll.lat, ll.lng));
     const simConfig = {
       ...(state.vehicleConfig || {}),
       vehicleSpeed: Math.max(1, Number(speedKmh) || 18) / 3.6
@@ -3531,6 +3624,7 @@ export function playThree3D(speedKmh = 18) {
         };
       });
       console.log(`[three3d] physics trajectory: ${simPoses.length} poses (kinematic bicycle model)`);
+      console.log('[three3d] playback route:', drivePlaybackRouteSource, drivePlaybackRouteMetrics || {});
     }
   } catch (e) {
     console.warn('[three3d] physics sim failed, fallback to raw route:', e?.message || e);
@@ -3602,7 +3696,9 @@ function startRenderLoop() {
       const total = playThree3D._total || routeCum[routeCum.length - 1];
       const preAutonomySample = sampleAutonomyAtProgress(progressM);
       const preLimit = autonomyPlaybackLimit(preAutonomySample, speedMS);
-      const driveDt = simDt * preLimit.scale;
+      // drivePoseMode の時系列は simulatePathPoses() で速度制限を織り込み済み。
+      // ここでも scale を掛けると低速区間が二重に遅くなり、実車らしく動かない。
+      const driveDt = drivePoseMode ? simDt : simDt * preLimit.scale;
       let basePos = null;
       let basePosAlreadyOffset = false;
       let heading = 0;
@@ -3625,6 +3721,7 @@ function startRenderLoop() {
       }
       autonomyCurrentSample = sampleAutonomyAtProgress(progressM) || preAutonomySample;
       const currentLimit = autonomyPlaybackLimit(autonomyCurrentSample, speedMS);
+      autonomyCurrentLimit = currentLimit;
       poseSpeedMS = Math.min(poseSpeedMS, currentLimit.allowedMS);
       const currentState = store.getState();
       const vc = currentState.vehicleConfig;
@@ -3676,7 +3773,7 @@ function startRenderLoop() {
       const isOffsetNow = Math.abs(autoDriveOffsetM) >= 0.12;
       if (isOffsetNow && !autoDriveWasOffset) autoDriveAvoidCount++;
       autoDriveWasOffset = isOffsetNow;
-      // 騾壼ｸｸ襍ｰ陦後・迚ｩ逅・Δ繝・Ν縺ｮ蜷代″(pose.heading=蠕瑚ｼｪ霆ｸ繝倥ャ繝・ぅ繝ｳ繧ｰ)繧偵◎縺ｮ縺ｾ縺ｾ菴ｿ縺・ｼ域怙繧ゅヨ繝ｩ繝・け繧峨＠縺・ｼ峨・      // 讓ｪ繧ｪ繝輔そ繝・ヨ蝗樣∩繝ｻ蠕ｩ譌ｧ縺ｪ縺ｩ縲檎ｵ瑚ｷｯ縺九ｉ騾ｸ閼ｱ縺励※讓ｪ遘ｻ蜍輔☆繧九肴凾縺ｮ縺ｿ縲∝ｮ溽ｧｻ蜍墓婿蜷代∈蜷代″繧定ｿｽ蠕薙＆縺帙※
+      // 通常走行は物理モデルの向き(pose.heading=後輪軸ヘディング)を基準とし、下の slew で単一ソースへ追従させる。
       // 1b(a)+(c): ヘディングは常に単一ソースへ車両連動レートで slew する。
       // 通常走行/回避/復旧で取得元を切り替えず（deviating トグル廃止）、出入りのカクツキを除去。
       // 前進中は実移動ベクトル、後退中は車体ヘディング(pose)を目標とする。
@@ -3703,7 +3800,7 @@ function startRenderLoop() {
         steeringAngle: poseSteer,
         model: `${manualRecoveryActive ? (recoveryPose?.kind === 'switchback' ? 'K-turn switchback' : 'reverse/replan recovery') : (drivePoseMode ? 'kinematic bicycle' : 'constant playback')} / autonomy v1`
       });
-      setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D);
+      setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D, currentLimit);
 
       const monitorHit = checkTruckSolidCollision(pos, heading, currentState);
       runSafetyMonitorTick({
@@ -3719,6 +3816,7 @@ function startRenderLoop() {
       if (
         !safetyMrmStop3D
         && currentLimit.mode === 'STOP'
+        && autonomyCurrentSample?.blockerRole === 'overhead'
         && !manualRecoveryActive
         && !recoveryPlayback3D
         && !isRecoveryBypassActive(autonomyCurrentSample, progressM)
@@ -3742,7 +3840,7 @@ function startRenderLoop() {
         if (cEl) cEl.textContent = String(contactCount3d);
       }
 
-      // 騾ｲ謐苓｡ｨ遉ｺ
+      // 進捗表示
       const poseEl = document.getElementById('map3dPoseCount');
       if (poseEl) {
         if (safetyMrmStop3D) {
@@ -3773,7 +3871,7 @@ function startRenderLoop() {
           steeringAngle: poseSteer,
           model: `${drivePoseMode ? 'kinematic bicycle' : 'constant playback'} / autonomy v1`
         });
-        setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D);
+        setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D, currentLimit);
       }
     }
 
@@ -3796,12 +3894,3 @@ export function resizeThree3D() {
 export function initThree3D() {
   console.log('[three3d] ready (lazy init on open)');
 }
-
-
-
-
-
-
-
-
-

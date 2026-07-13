@@ -72,7 +72,11 @@ async function main() {
     console.log(`  [${c.key}] ${c.cand.id} (world=${c.worldHash} len=${c.cand.lenM}m w=${c.cand.widthM ?? '?'}m grade=${c.cand.gradePct ?? '-'}%)`);
   }
 
-  const browser = await puppeteer.launch({ headless: true });
+  const chromeArgs = [];
+  if (process.env.PUPPETEER_NO_SANDBOX === '1') {
+    chromeArgs.push('--no-sandbox', '--disable-setuid-sandbox');
+  }
+  const browser = await puppeteer.launch({ headless: true, args: chromeArgs });
   const pageErrors = [];
 
   const runId = Date.now();

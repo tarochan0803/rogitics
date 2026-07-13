@@ -1,0 +1,38 @@
+{
+  "source": "tile_batch_export",
+  "layer": "seamlessphoto",
+  "zoom": 18,
+  "tile": {
+    "z": 18,
+    "x": 232844,
+    "y": 103225
+  },
+  "bbox": [
+    139.7625732421875,
+    35.681840602444545,
+    139.76394653320312,
+    35.6829560755903
+  ],
+  "attribution": "国土地理院",
+  "id": "tile_z18_x232844_y103225_20260709_054239_2524",
+  "width": 256,
+  "height": 256,
+  "classes": [
+    "private_road_driveway",
+    "parking_aisle",
+    "tree_canopy",
+    "utility_pole",
+    "guardrail_fence",
+    "wall_curb_step",
+    "gate_bollard",
+    "loading_space",
+    "unknown_blocker"
+  ],
+  "boxesPx": [],
+  "polygonsPx": [],
+  "boxCount": 0,
+  "polygonCount": 0,
+  "detectLabelCount": 0,
+  "segmentLabelCount": 0,
+  "savedAt": "2026-07-09T05:42:39Z"
+}

@@ -143,6 +143,15 @@ def health():
             "/annotate/fetch",
             "/annotate/save",
             "/annotate/stats",
+            "/yolo/ui",
+            "/yolo/fetch",
+            "/yolo/export_tiles",
+            "/yolo/next_unreviewed",
+            "/yolo/model_status",
+            "/yolo/predict",
+            "/yolo/update",
+            "/yolo/save",
+            "/yolo/stats",
         ],
     }
 
@@ -236,6 +245,52 @@ class AnnotateSaveRequest(BaseModel):
     id: str
     maskPng: str = Field(..., description="data:image/png;base64,... または base64本体")
     meta: Optional[dict] = None
+
+
+class YoloFetchRequest(BaseModel):
+    bbox: List[float] = Field(..., description="[minLon, minLat, maxLon, maxLat]")
+    zoom: int = 18
+    layer: str = Field(default="seamlessphoto", description="seamlessphoto | ort | std")
+    maxTiles: int = 64
+
+
+class YoloBox(BaseModel):
+    classId: int
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class YoloPolygon(BaseModel):
+    classId: int
+    points: List[Any]
+
+
+class YoloSaveRequest(BaseModel):
+    id: str
+    width: int
+    height: int
+    boxes: List[YoloBox] = Field(default_factory=list)
+    polygons: List[YoloPolygon] = Field(default_factory=list)
+    meta: Optional[dict] = None
+
+
+class YoloUpdateRequest(YoloSaveRequest):
+    pass
+
+
+class YoloExportTilesRequest(BaseModel):
+    bbox: List[float] = Field(..., description="[minLon, minLat, maxLon, maxLat]")
+    zoom: int = 18
+    layer: str = Field(default="seamlessphoto", description="seamlessphoto | ort | std")
+    maxTiles: int = 100
+
+
+class YoloPredictRequest(BaseModel):
+    id: str
+    conf: float = 0.25
+    imgsz: int = 640
 
 
 def _decode_data_url(s: str) -> bytes:
@@ -393,6 +448,181 @@ def annotate_save(req: AnnotateSaveRequest):
         raise HTTPException(status_code=404,
                             detail="対象の取得画像が見つかりません（先に『この範囲で道路取得』してください）。")
     return result
+
+
+# ============================================================
+# YOLO教師データ作成: 地図で範囲選択→航空写真/地図→矩形ラベル→保存
+# ============================================================
+
+@app.get("/yolo/ui")
+def yolo_ui():
+    path = os.path.join(_HERE, "yolo_annotate.html")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="yolo_annotate.html not found")
+    return FileResponse(path, media_type="text/html")
+
+
+@app.get("/yolo/classes")
+def yolo_classes():
+    from . import yolo_dataset
+    return {"classes": yolo_dataset.classes()}
+
+
+@app.get("/yolo/stats")
+def yolo_stats():
+    from . import yolo_dataset
+    return yolo_dataset.stats()
+
+
+@app.get("/yolo/sample/{sample_id}")
+def yolo_sample(sample_id: str):
+    from . import yolo_dataset
+
+    try:
+        return yolo_dataset.load_sample(sample_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="sample not found")
+
+
+@app.get("/yolo/next_unreviewed")
+def yolo_next_unreviewed():
+    from . import yolo_dataset
+
+    sample = yolo_dataset.next_unreviewed_sample()
+    if sample is None:
+        raise HTTPException(status_code=404, detail="unreviewed sample not found")
+    return sample
+
+
+@app.get("/yolo/model_status")
+def yolo_model_status():
+    from . import yolo_predict
+
+    weights = yolo_predict.find_latest_weights()
+    return {"available": bool(weights), "weights": weights}
+
+
+@app.post("/yolo/predict")
+def yolo_predict_sample(req: YoloPredictRequest):
+    from . import yolo_predict
+
+    try:
+        return yolo_predict.predict_sample(req.id, conf=req.conf, imgsz=req.imgsz)
+    except FileNotFoundError as e:
+        detail = str(e)
+        if "weights" in detail:
+            raise HTTPException(status_code=501, detail=detail)
+        raise HTTPException(status_code=404, detail=detail)
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"YOLO prediction failed: {e}")
+
+
+@app.post("/yolo/fetch")
+def yolo_fetch(req: YoloFetchRequest):
+    from . import dataset, yolo_dataset
+    from .geo import tile_grid_for_bbox
+    from .tiles import GSI_LAYERS, fetch_stitched
+
+    if len(req.bbox) != 4:
+        raise HTTPException(status_code=400, detail="bbox must be [minLon,minLat,maxLon,maxLat]")
+    layer = (req.layer or "seamlessphoto").lower()
+    if layer not in GSI_LAYERS:
+        raise HTTPException(status_code=400, detail=f"unknown layer: {layer}")
+    min_lon, min_lat, max_lon, max_lat = req.bbox
+    zoom = max(1, min(int(req.zoom), GSI_LAYERS[layer][1]))
+
+    grid = tile_grid_for_bbox(min_lon, min_lat, max_lon, max_lat, zoom, margin_tiles=0)
+    n_tiles = (grid.x_max - grid.x_min + 1) * (grid.y_max - grid.y_min + 1)
+    if n_tiles > req.maxTiles:
+        raise HTTPException(status_code=400, detail=f"bbox is too large ({n_tiles} tiles). Zoom in and retry.")
+
+    try:
+        stitch = fetch_stitched(min_lon, min_lat, max_lon, max_lat, zoom, layer=layer, margin_tiles=0)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"tile fetch failed: {e}")
+
+    sample_id = yolo_dataset.new_id()
+    yolo_dataset.save_pending(sample_id, stitch.rgb)
+    return {
+        "id": sample_id,
+        "width": int(stitch.grid.width_px),
+        "height": int(stitch.grid.height_px),
+        "zoom": zoom,
+        "layer": layer,
+        "bbox": [min_lon, min_lat, max_lon, max_lat],
+        "tiles": n_tiles,
+        "missingTiles": stitch.missing_tiles,
+        "classes": yolo_dataset.classes(),
+        "image": yolo_dataset.b64_png(dataset._png_bytes_from_rgb(stitch.rgb)),
+    }
+
+
+@app.post("/yolo/save")
+def yolo_save(req: YoloSaveRequest):
+    from . import yolo_dataset
+
+    try:
+        result = yolo_dataset.commit(
+            req.id,
+            [b.model_dump() for b in (req.boxes or [])],
+            width=req.width,
+            height=req.height,
+            meta=req.meta or {},
+            polygons=[p.model_dump() for p in (req.polygons or [])],
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="対象の取得画像が見つかりません（先にYOLOラベル作成で範囲取得してください）。",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.post("/yolo/update")
+def yolo_update(req: YoloUpdateRequest):
+    from . import yolo_dataset
+
+    try:
+        result = yolo_dataset.update_sample(
+            req.id,
+            [b.model_dump() for b in (req.boxes or [])],
+            width=req.width,
+            height=req.height,
+            meta=req.meta or {},
+            polygons=[p.model_dump() for p in (req.polygons or [])],
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="sample not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
+@app.post("/yolo/export_tiles")
+def yolo_export_tiles(req: YoloExportTilesRequest):
+    from . import yolo_dataset
+
+    if len(req.bbox) != 4:
+        raise HTTPException(status_code=400, detail="bbox must be [minLon,minLat,maxLon,maxLat]")
+    min_lon, min_lat, max_lon, max_lat = req.bbox
+    try:
+        return yolo_dataset.export_tiles_for_bbox(
+            min_lon,
+            min_lat,
+            max_lon,
+            max_lat,
+            zoom=req.zoom,
+            layer=req.layer,
+            max_tiles=req.maxTiles,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"tile export failed: {e}")
 
 
 if __name__ == "__main__":

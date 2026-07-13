@@ -1,0 +1,14 @@
+path: /home/ncnadmin/LOGISTICS_OS_v8.0/road_seg/dataset_yolo/source
+train: images
+val: images
+nc: 9
+names:
+  0: private_road_driveway
+  1: parking_aisle
+  2: tree_canopy
+  3: utility_pole
+  4: guardrail_fence
+  5: wall_curb_step
+  6: gate_bollard
+  7: loading_space
+  8: unknown_blocker

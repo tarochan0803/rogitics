@@ -76,7 +76,8 @@ async function resolvePlateauTileset(lat, lng, signal) {
 const TILES_RENDERER_URL = 'https://esm.sh/3d-tiles-renderer@0.4.27?external=three';
 const TILES_PLUGINS_URL = 'https://esm.sh/3d-tiles-renderer@0.4.27/plugins?external=three';
 const DRACO_DECODER_PATH = 'https://www.gstatic.com/draco/versioned/decoders/1.5.7/';
-const DEFAULT_PLATEAU_Y_OFFSET_M = -3.5;
+const DEFAULT_PLATEAU_Y_OFFSET_M = 0;
+const DEFAULT_PLATEAU_GROUND_TARGET_Y_M = 0;
 const DEFAULT_PLATEAU_OPACITY = 0.52;
 let _ctorPromise = null;
 function loadTilesRendererCtor() {
@@ -152,6 +153,21 @@ function plateauYOffsetM() {
   return Number.isFinite(raw) ? raw : DEFAULT_PLATEAU_Y_OFFSET_M;
 }
 
+function plateauGroundTargetY() {
+  const raw = Number(window.PLATEAU_GROUND_TARGET_Y);
+  return Number.isFinite(raw) ? raw : DEFAULT_PLATEAU_GROUND_TARGET_Y_M;
+}
+
+function plateauGroundAlignEnabled() {
+  return !(typeof window !== 'undefined' && window.PLATEAU_GROUND_ALIGN === false);
+}
+
+// 地盤推定に使う水平半径(m)。原点(ローカル0,0)からこの距離内のメッシュだけを見る。
+function plateauSampleRadiusM() {
+  const raw = Number(typeof window !== 'undefined' ? window.PLATEAU_SAMPLE_RADIUS_M : NaN);
+  return Number.isFinite(raw) && raw > 0 ? raw : 400;
+}
+
 function plateauOpacity() {
   const raw = Number(window.PLATEAU_OPACITY);
   return Number.isFinite(raw) ? Math.max(0.15, Math.min(1, raw)) : DEFAULT_PLATEAU_OPACITY;
@@ -220,6 +236,245 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
   let outerGroup = null;
   let failed = false;
   let opacityPass = 0;
+  // 接地の安定化用の内部状態（表示のみ。物理/判定には一切使わない）
+  const AUTO_SHIFT_CLAMP_M = 25;   // 自動シフトの上限（外れ値で飛ばさない）
+  const SAMPLE_MIN_INTERVAL_MS = 1500; // 再サンプルの最小間隔
+  const SHIFT_LERP = 0.15;         // 適用シフトのスルー係数（ジャンプ防止）
+  const STABLE_DIFF_M = 0.3;       // 連続サンプル差がこれ未満なら安定
+  const MESH_CHANGE_FRAC = 0.10;   // 安定後はメッシュ数がこの割合以上変化した時だけ再サンプル
+  const MIN_MESHES_FOR_MEDIAN = 3; // 半径内メッシュがこれ未満なら従来グローバル方式へ
+  const MAX_MESH_VERTS = 2000;     // 1メッシュあたりの頂点走査上限（stride算出用）
+  let _lastSampleMs = 0;
+  let _lastSampleMeshCount = 0;
+  let _prevGroundEstimateY = null;
+  let _groundStable = false;
+  let _targetShiftM = 0;   // サンプルで決まる目標シフト
+  let _appliedShiftM = 0;  // 実際に適用中のシフト（毎フレーム目標へlerp）
+  const nowMs = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+  const countMeshes = () => {
+    let n = 0;
+    try { pivot?.traverse?.((o) => { if (o?.isMesh) n += 1; }); } catch (_e) { n = 0; }
+    return n;
+  };
+  const groundMetrics = {
+    autoGroundAlign: plateauGroundAlignEnabled(),
+    manualOffsetM: plateauYOffsetM(),
+    baseMinY: null,
+    baseMaxY: null,
+    autoShiftM: 0,
+    appliedYOffsetM: plateauYOffsetM(),
+    sampled: false,
+    meshCount: 0,
+    lastSampleReason: 'not-sampled',
+    // 追加フィールド（半径限定・中央値ベースの接地）
+    sampleRadiusM: plateauSampleRadiusM(),
+    meshesInRadius: 0,
+    groundEstimateY: null,
+    groundStable: false
+  };
+  // 原点(ローカル0,0)から水平R以内のメッシュだけを見て、各メッシュ最低Yの中央値で地盤を推定する。
+  // 遠方の谷や外れ値頂点1点に引きずられないため、グローバルminYより局所地盤に近い。
+  // 計測は接地シフトを0に戻した素のワールド座標で行う（x=東, z=-北, y=上）。
+  const sampleBaseBounds = () => {
+    if (!outerGroup || !pivot || !THREE?.Box3) return null;
+    const meshCount = countMeshes();
+    groundMetrics.meshCount = meshCount;
+    if (meshCount <= 0) {
+      groundMetrics.lastSampleReason = 'no-mesh';
+      return null;
+    }
+    const prevY = outerGroup.position.y;
+    outerGroup.position.y = 0;
+    outerGroup.updateMatrixWorld(true);
+    let result = null;
+    try {
+      // デバッグ用: tiles.group ローカル系の全体bbox（接地には使わない）
+      try {
+        tiles?.group?.updateMatrixWorld?.(true);
+        const inv = new THREE.Matrix4().copy(tiles.group.matrixWorld).invert();
+        const localBox = new THREE.Box3();
+        pivot.traverse?.((obj) => {
+          if (!obj?.isMesh || !obj.geometry) return;
+          if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox?.();
+          if (!obj.geometry.boundingBox) return;
+          const b = obj.geometry.boundingBox.clone().applyMatrix4(obj.matrixWorld).applyMatrix4(inv);
+          localBox.union(b);
+        });
+        if (!localBox.isEmpty()) {
+          groundMetrics.localMinY = Number(localBox.min.y.toFixed(2));
+          groundMetrics.localMaxY = Number(localBox.max.y.toFixed(2));
+          groundMetrics.localWidthM = Number((localBox.max.x - localBox.min.x).toFixed(2));
+          groundMetrics.localHeightYM = Number((localBox.max.y - localBox.min.y).toFixed(2));
+          groundMetrics.localDepthZM = Number((localBox.max.z - localBox.min.z).toFixed(2));
+        }
+      } catch (_e) { /* debug metrics only */ }
+
+      const R = plateauSampleRadiusM();
+      groundMetrics.sampleRadiusM = R;
+      const center = new THREE.Vector3();
+      const v = new THREE.Vector3();
+      const perMeshMinY = [];       // 半径内メッシュごとの最低Y
+      let overallMinY = Infinity; let overallMaxY = -Infinity; // 半径内の全体域
+      let sampledVertices = 0; let meshesInRadius = 0;
+      // フォールバック用: 全メッシュのグローバルminY/maxY
+      let globalMinY = Infinity; let globalMaxY = -Infinity; let globalSampled = 0;
+      try {
+        pivot.traverse?.((obj) => {
+          const attr = obj?.isMesh ? obj.geometry?.attributes?.position : null;
+          if (!attr?.count || !obj.matrixWorld) return;
+          const geom = obj.geometry;
+          if (!geom.boundingBox) geom.computeBoundingBox?.();
+          // メッシュ中心のワールド水平距離（x-z平面）で半径判定
+          let inRadius = false;
+          if (geom.boundingBox) {
+            geom.boundingBox.getCenter(center).applyMatrix4(obj.matrixWorld);
+            inRadius = Math.hypot(center.x, center.z) <= R;
+          }
+          const stride = Math.max(1, Math.floor(attr.count / MAX_MESH_VERTS));
+          let meshMinY = Infinity;
+          for (let i = 0; i < attr.count; i += stride) {
+            v.fromBufferAttribute(attr, i).applyMatrix4(obj.matrixWorld);
+            if (!Number.isFinite(v.y)) continue;
+            if (v.y < globalMinY) globalMinY = v.y;
+            if (v.y > globalMaxY) globalMaxY = v.y;
+            globalSampled += 1;
+            if (inRadius) {
+              if (v.y < meshMinY) meshMinY = v.y;
+              if (v.y < overallMinY) overallMinY = v.y;
+              if (v.y > overallMaxY) overallMaxY = v.y;
+              sampledVertices += 1;
+            }
+          }
+          if (inRadius && Number.isFinite(meshMinY)) {
+            perMeshMinY.push(meshMinY);
+            meshesInRadius += 1;
+          }
+        });
+      } catch (_e) { /* サンプル失敗時は下でフォールバック */ }
+
+      groundMetrics.meshesInRadius = meshesInRadius;
+
+      // 半径内メッシュが3個以上: 各メッシュ最低Yの中央値を地盤推定に採用
+      if (meshesInRadius >= MIN_MESHES_FOR_MEDIAN && perMeshMinY.length >= MIN_MESHES_FOR_MEDIAN) {
+        perMeshMinY.sort((a, b) => a - b);
+        const mid = perMeshMinY.length >> 1;
+        const median = (perMeshMinY.length % 2)
+          ? perMeshMinY[mid]
+          : (perMeshMinY[mid - 1] + perMeshMinY[mid]) / 2;
+        groundMetrics.rawMinY = Number(overallMinY.toFixed(2));
+        groundMetrics.rawMaxY = Number(overallMaxY.toFixed(2));
+        groundMetrics.rawHeightM = Number((overallMaxY - overallMinY).toFixed(2));
+        groundMetrics.vertexSampleCount = sampledVertices;
+        groundMetrics.lastSampleReason = 'radius-median';
+        result = { minY: overallMinY, maxY: overallMaxY, groundEstimateY: median, meshesInRadius, meshCount };
+        return result;
+      }
+
+      // フォールバック1: 全メッシュ頂点のグローバルminY（従来方式）
+      if (globalSampled > 0 && Number.isFinite(globalMinY) && Number.isFinite(globalMaxY)) {
+        const height = globalMaxY - globalMinY;
+        groundMetrics.rawMinY = Number(globalMinY.toFixed(2));
+        groundMetrics.rawMaxY = Number(globalMaxY.toFixed(2));
+        groundMetrics.rawHeightM = Number(height.toFixed(2));
+        groundMetrics.vertexSampleCount = globalSampled;
+        if (!(height > 0.5) || height > 600) {
+          groundMetrics.lastSampleReason = 'vertex-height-out-of-range';
+          return null;
+        }
+        groundMetrics.lastSampleReason = 'global-fallback';
+        result = { minY: globalMinY, maxY: globalMaxY, groundEstimateY: globalMinY, meshesInRadius, meshCount };
+        return result;
+      }
+
+      // フォールバック2: 頂点属性が無い場合のBox3（シフト0状態のまま計測）
+      let box = null;
+      try { box = new THREE.Box3().setFromObject(pivot); } catch (_e) { box = null; }
+      if (!box || !Number.isFinite(box.min?.y) || !Number.isFinite(box.max?.y)) {
+        groundMetrics.lastSampleReason = 'invalid-bounds';
+        return null;
+      }
+      const bh = box.max.y - box.min.y;
+      groundMetrics.rawMinY = Number(box.min.y.toFixed(2));
+      groundMetrics.rawMaxY = Number(box.max.y.toFixed(2));
+      groundMetrics.rawHeightM = Number(bh.toFixed(2));
+      if (!(bh > 0.5) || bh > 1200) {
+        groundMetrics.lastSampleReason = 'bounds-height-out-of-range';
+        return null;
+      }
+      groundMetrics.lastSampleReason = 'box-fallback';
+      result = { minY: box.min.y, maxY: box.max.y, groundEstimateY: box.min.y, meshesInRadius, meshCount };
+      return result;
+    } finally {
+      outerGroup.position.y = prevY;
+      outerGroup.updateMatrixWorld(true);
+    }
+  };
+  // 接地シフトの決定＋適用。サンプルは条件成立時のみ、適用は毎フレームlerpでスルーする。
+  const refreshGroundPlacement = (forceSample = false) => {
+    if (!outerGroup) return;
+    const manualOffset = plateauYOffsetM();
+    const enabled = plateauGroundAlignEnabled();
+    groundMetrics.autoGroundAlign = enabled;
+    groundMetrics.manualOffsetM = manualOffset;
+
+    if (!enabled) {
+      // 自動接地 無効: シフト0で手動オフセットのみ（既存挙動を維持）
+      _targetShiftM = 0; _appliedShiftM = 0;
+      groundMetrics.baseMinY = null;
+      groundMetrics.baseMaxY = null;
+      groundMetrics.groundEstimateY = null;
+      groundMetrics.autoShiftM = 0;
+      groundMetrics.sampled = false;
+      groundMetrics.groundStable = false;
+      outerGroup.position.y = manualOffset;
+      groundMetrics.appliedYOffsetM = Number(outerGroup.position.y.toFixed(2));
+      return;
+    }
+
+    // 再サンプル要否: メッシュ数変化 かつ 1.5秒経過。安定後は10%以上の変化のみ。
+    const meshCount = countMeshes();
+    groundMetrics.meshCount = meshCount;
+    const now = nowMs();
+    let doSample = false;
+    if (forceSample || !groundMetrics.sampled) {
+      doSample = meshCount > 0 || forceSample;
+    } else if (now - _lastSampleMs >= SAMPLE_MIN_INTERVAL_MS) {
+      const delta = Math.abs(meshCount - _lastSampleMeshCount);
+      if (_groundStable) {
+        const thresh = Math.max(1, Math.round(_lastSampleMeshCount * MESH_CHANGE_FRAC));
+        doSample = delta >= thresh;
+      } else {
+        doSample = delta !== 0;
+      }
+    }
+
+    if (doSample) {
+      const bounds = sampleBaseBounds();
+      if (bounds) {
+        _lastSampleMs = now;
+        _lastSampleMeshCount = bounds.meshCount;
+        groundMetrics.baseMinY = Number(bounds.minY.toFixed(2));
+        groundMetrics.baseMaxY = Number(bounds.maxY.toFixed(2));
+        groundMetrics.groundEstimateY = Number(bounds.groundEstimateY.toFixed(2));
+        // 連続2回のサンプル差が小さければ安定とみなす
+        _groundStable = (_prevGroundEstimateY != null)
+          && (Math.abs(bounds.groundEstimateY - _prevGroundEstimateY) < STABLE_DIFF_M);
+        _prevGroundEstimateY = bounds.groundEstimateY;
+        groundMetrics.groundStable = _groundStable;
+        // 目標シフト = ターゲットY − 地盤推定Y、±25mでクランプ
+        let shift = plateauGroundTargetY() - bounds.groundEstimateY;
+        shift = Math.max(-AUTO_SHIFT_CLAMP_M, Math.min(AUTO_SHIFT_CLAMP_M, shift));
+        _targetShiftM = shift;
+        groundMetrics.autoShiftM = Number(shift.toFixed(2));
+        groundMetrics.sampled = true;
+      }
+    }
+
+    // 毎フレーム lerp で目標シフトへ寄せる（ストリーミングのジャンプを吸収）
+    _appliedShiftM += (_targetShiftM - _appliedShiftM) * SHIFT_LERP;
+    outerGroup.position.y = _appliedShiftM + manualOffset;
+    groundMetrics.appliedYOffsetM = Number(outerGroup.position.y.toFixed(2));
+  };
   try {
     tiles = new Ctor(area.url);
     if (gltf && tiles.registerPlugin) {
@@ -247,10 +502,11 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
     pivot.add(tiles.group);
     outerGroup = new THREE.Group();
     outerGroup.name = 'plateauTilesOuter';
-    outerGroup.position.y = plateauYOffsetM(); // 微調整用（任意）
+    outerGroup.position.y = plateauYOffsetM(); // 自動接地後の微調整用（任意）
     outerGroup.add(pivot);
     scene.add(outerGroup);
     applyPlateauOpacity(tiles.group);
+    refreshGroundPlacement(true);
 
     tiles.addEventListener?.('load-tileset', () => onStatus?.({ state: 'streaming', area: area.name }));
     tiles.addEventListener?.('load-error', (e) => {
@@ -276,9 +532,14 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
         if (tiles.setResolutionFromRenderer) tiles.setResolutionFromRenderer(camera, renderer);
         tiles.update();
         if ((++opacityPass % 12) === 0) applyPlateauOpacity(tiles.group);
-        // 微調整(window.PLATEAU_Y_OFFSET)を毎フレーム反映（コンソールから即時に合わせ込めるように）
-        if (outerGroup) outerGroup.position.y = plateauYOffsetM();
+        // 接地は半径限定・中央値ベースで局所地盤へ合わせる。再サンプル要否と適用lerpは
+        // refreshGroundPlacement 内部で判定する（毎フレーム呼ぶだけでよい）。
+        // window.PLATEAU_Y_OFFSET は接地後の微調整として毎フレーム反映される。
+        refreshGroundPlacement();
       } catch (_e) { /* streaming中の一時エラーは無視 */ }
+    },
+    getMetrics() {
+      return { ...groundMetrics };
     },
     dispose() {
       try { if (outerGroup) scene.remove(outerGroup); } catch (_e) {}

@@ -28,6 +28,8 @@
 5) 学習            … 手動修正 + 弱教師データで道路面モデルを継続学習
 6) 手動データだけ学習 … dataset/images + masks のみで学習
 7) 教師データ統計   … 手動件数・弱教師件数・モデル情報を確認
+8) YOLOラベル作成  … 航空写真/地図タイルを出力し、箱/多角形で修正
+9) YOLO学習        … dataset_yolo から detect/segment モデルを一括学習
 0) 終了
 ```
 
@@ -79,6 +81,50 @@ CLIで直接回す場合:
 # 教師データ数・モデル情報
 .\.venv\Scripts\python.exe -c "from road_seg import dataset; import json; print(json.dumps(dataset.stats(), ensure_ascii=False, indent=2))"
 ```
+
+## YOLO/YOLO-segで「地図から読める要素」を学習する（8 → 9）
+
+道路面の抽出は上のマスク学習が本線。YOLOはそれとは別に、航空写真/標準地図から読める
+**普通の車道・歩道・構内通路・駐車場走行面・樹木・電柱候補・ガードレール/フェンス・壁/縁石・門/ボラード・搬入口・その他障害物**
+を覚えさせる。走行可否に使うなら箱より **YOLO-segの多角形** を優先する。
+既存ラベルIDを壊さないため、普通の車道は class 9、歩道は class 10 として末尾に追加している。
+
+1. メニュー **8) YOLOラベル作成** → ブラウザで `/yolo/ui` が開く。
+2. 地図を対象範囲へ移動 → 画像種別（航空写真/オルソ/標準地図）とズームを選ぶ。
+3. まとめて作る場合は枚数を選んで **この範囲をタイル出力**。
+   - 既定は20枚。範囲内のGSI XYZタイルを空ラベルの教師データ候補として保存する。
+   - その後 **未修正タイルを開く** で1枚ずつ開き、多角形/箱を足して保存する。
+   - 保存したタイルは reviewed 扱いになり、次の未修正タイルへ進める。
+   - 未修正タイルは学習から除外する。空の負例として使う場合も、一度開いて保存する。
+4. 1枚ずつ直す場合は **この範囲を取得** → 右側の画像上でクラスを選ぶ。
+   - **多角形**: 点を打って囲み、**多角形確定**。Enterでも確定、Escで下書き破棄。
+   - **箱**: ドラッグで矩形。YOLO detect用。segment学習時は矩形ポリゴンとしても使う。
+   - Delete/Backspaceで選択削除。クラス変更は上部のクラスボタン、0〜9は数字キーでも変更できる。
+5. **保存してYOLO教師データ化**。
+   - 保存先は `road_seg/dataset_yolo/source/images/<id>.png`
+   - YOLO detectラベルは `road_seg/dataset_yolo/source/labels/<id>.txt`
+   - YOLO segmentラベルは `road_seg/dataset_yolo/source/labels_segment/<id>.txt`
+   - クラス・bbox・出典は `source/meta/<id>.json`
+   - ラベル0個のタイルも「負例」として保存できる。
+6. まず20〜30タイル程度を直したら メニュー **9) YOLO学習**。
+   - 既定は `segment`。`road_seg/dataset_yolo/prepared/segment/dataset.yaml` を自動生成し、train/val に分割する。
+   - 学習結果は `road_seg/models_yolo/aerial_elements*/` に出る。
+   - 学習後はラベル画面の **学習済み検出** で、開いているタイルに推論結果を下書きとして追加できる。
+     追加された箱/多角形を人間が消す・直す・保存することで、次の学習データに戻せる。
+   - 直接実行する場合:
+
+```powershell
+PYENV_VERSION=fa-env python -m road_seg.train_yolo --task segment --model yolo11n-seg.pt --epochs 80 --imgsz 640 --batch auto
+```
+
+YOLO学習バックエンドは任意依存。別環境では以下を入れる。
+
+```powershell
+PYENV_VERSION=fa-env python -m pip install -r road_seg/requirements-yolo.txt
+```
+
+注意: Ultralytics YOLO はライセンス確認が必要。現段階では「学習・検証環境」として隔離し、
+本体判定に組み込むか、どのYOLO実装/ライセンスで配布するかは別判断にする。
 
 ## まず動かす（モデル・ネット不要 / CLI）
 

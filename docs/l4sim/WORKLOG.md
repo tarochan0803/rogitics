@@ -1,5 +1,189 @@
 # L4SIM 作業ログ（毎作業ごとに追記: やったこと / 次やること）
 
+## 2026-07-10 (45) simulatePathPosesの停止テール修正 + puppeteer no-sandbox対応(batch2件)
+### やったこと
+- `src/core/physics.js:simulatePathPoses()` に停止テール対策を追加。`speedLimitAtM` が
+  ハード停止(0)を返す区間でv=0のままwaypointsが残ると、従来はmaxSteps(=3000秒相当)まで
+  空回りし「同位置・simTime≈3000s」の凍結ポーズを最後にpushしていた（再生側がその3000秒を
+  再生し続け「止まったまま動かない」ように見える）。
+- 直近5秒間(`noProgressWindowSteps`個のstep)でtraveledDistanceの増分が0.05m未満ならループを
+  break するよう変更。break時は最終ポーズを必ずpushし、`halted: true` / `haltReason: 'no_progress'`
+  を非破壊で付与（既存フィールド・poses配列の形は変えない。呼び出し側の後方互換を維持）。
+  正常完走時（waypoints.length===0で通常break）は従来どおり変化なし。
+- 検証中、実際の最終進入(目的地手前0.5〜1.0m・v<0.2で強制v=0になる既存ロジック)で本物のデッドロックが
+  複数の合成ルート(直線・カーブ)で再現することを確認 — 今回の修正はこの既存の停止テール問題も
+  正しく検出・打ち切りできている（副次的に有用）。
+- `src/batch/run_l4_route_regression.js` / `src/batch/run_l4_scenario_matrix.js` の
+  `puppeteer.launch({ headless: true })` に、`run_index3d_smoke.js` と同じ方式で
+  `PUPPETEER_NO_SANDBOX === '1'` のとき `--no-sandbox --disable-setuid-sandbox` を渡すよう追加
+  （AppArmor制限環境でChromeが起動できない問題への対応）。
+### 検証
+- `node --check src/core/physics.js src/batch/run_l4_route_regression.js src/batch/run_l4_scenario_matrix.js`: OK
+- `node src/batch/run_sim_repro.js`: ALL PASS（determinism/replay/jitter/dt-halving 4項目）
+- `node src/batch/run_safety_check.js`: ALL PASS
+### 残り
+- なし（今回の2件のスコープは完了）。停止テールの根本原因である目的地手前デッドロック自体
+  （dist 0.5〜1.0mでv<0.2だと強制v=0固定になり進めなくなる既存ロジック）は未修正。今回は
+  「打ち切って再生を止める」対策のみ。根治するなら目的地到達判定の距離閾値/速度閾値の見直しが必要。
+
+## 2026-07-09 (44) 予測STOPの即MRM化をやめ、物理再生の二重減速を修正
+### やったこと
+- 接触0・Safety OKでも、plannerの `STOP` / `forwardClearanceM=0` だけでMRM停止していたため、
+  地上物/幅不足の予測STOPは `MONITORED_CRAWL` / `ROAD_EDGE_CRAWL` として監視徐行に変更。
+- 低クリアランスの頭上障害物はハード停止のまま維持。
+- Safety Monitorにはハード停止時だけ `forwardClearanceM` を渡し、予測値だけでMRMにしないように変更。
+- `simulatePathPoses()` で速度制限済みの物理時系列に、再生ループでも速度係数を掛けていた二重減速を修正。
+- 下パネル/ライブメトリクスも、サンプルの `STOP` ではなく実際の再生制限モードを表示するように変更。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK
+- `node src/batch/run_safety_check.js`: ALL PASS
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+- ブラウザデモ再生: 6秒で `progressM=22.7m` / `currentMode=SLOW` / safety `OK`。
+### 残り
+- `phase7-playback` の人工地上障害物回避は、回避軌道中にfixtureへ接触してMRMになるケースが残る。
+  ユーザー実地点の「接触0なのに止まる」問題とは別に、回避軌道生成を後続で改善する。
+
+## 2026-07-09 (43) 3D再生軌道の斜め飛び修正
+### やったこと
+- (42) の再生用 `buildTrajectoryPlanFromSelection()` 接続で、`selectedRoadRoute` を優先したため、
+  確定ルートではない粗い選択線を再解釈して斜めに飛ぶ経路が発生した。
+- 3D再生では候補再採点をやめ、確定済み `state.simRoute` のみを
+  `normalizeRouteForVehicle()` で丸める方式へ変更。
+- ライブ診断の `drivePlaybackRouteSource` は `trajectory-planner` ではなく `route-normalizer` になる。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK
+- `node src/batch/run_safety_check.js`: ALL PASS
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+- ブラウザデモ再生: `drivePlaybackRouteSource=route-normalizer` / safety `OK`。
+### 残り
+- まだ個別地点でMRMになる場合は、斜め飛びではなく `forwardClearanceM` / 建物接触 / 幅余裕の問題として別途潰す。
+
+## 2026-07-09 (42) 3D再生の中心線追従を車両軌道化
+### やったこと
+- 3D再生時だけ `state.simRoute` をそのまま物理追従していたため、交差点で中心線の折れ点に突っ込み
+  「操舵限界/SLOWで止まりがち」に見える問題を修正。
+- `map3dThree.playThree3D()` で再生直前に `buildTrajectoryPlanFromSelection()` を通し、
+  既存の車両向けアーク/外振り候補を物理シミュレーションの入力に使うようにした。
+- ライブ診断に `drivePlaybackRouteSource` / `drivePlaybackRouteMetrics` を追加し、
+  `window.index3DGetAutonomyDriveMetrics()` から確認できるようにした。
+- `simulatePathPoses()` の操舵角追従遅れで速度を固定 `0.3m/s` まで落とす処理をやめ、
+  安全停止は上位の監視に任せつつ、操舵中は段階的減速へ変更。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK
+- `node --check src/core/physics.js`: OK
+- `node --check src/index3dMain.js`: OK
+- 合成直角ルートで、3点入力が53点のアーク付き経路へ変換されることを確認。
+- ブラウザデモ再生:
+  `drivePlaybackRouteSource=trajectory-planner` / `STOP=0` / `steeringSaturationCount=0`
+  / safety `OK`。
+- `node src/batch/run_safety_check.js`: ALL PASS
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+### 残り
+- 個別地点でまだ低速が強い場合は、`window.index3DGetAutonomyDriveMetrics()` の
+  `currentSample.widthMarginM` / `curveSwingM` / `forwardClearanceM` / `drivePlaybackRouteMetrics`
+  を見て、幅推定・建物面・交差点キャップのどれが詰まっているかを分ける。
+
+## 2026-07-09 (41) 交差点中心線折れによるSATURATED停止の緩和
+### やったこと
+- 実道路面には交差点キャップが足されているのに、plannerの旋回半径判定だけ中心線の直角折れを
+  そのまま見て `SATURATED` 極低速になる問題を修正。
+- 交差点キャップ圏内では `effectivePathRadiusM` を車両最小旋回半径/キャップ半径で補正し、
+  `turnRadiusDeficitM` と `steeringRatio` の過剰判定を抑制。
+- 直進サンプル（曲率∞）まで最小旋回半径へ丸めて偽 `curveSwingM=3m` を作るバグも修正。
+- `getAutonomyDriveMetrics()` の currentSample に
+  `effectivePathRadiusM` / `intersectionRelaxed` / `intersectionCapRadiusM` / `intersectionCapDistanceM` を追加。
+### 検証
+- `node --check src/sim/autonomy/behaviorPlanner.js`: OK
+- `node --check src/ui/map3dThree.js`: OK
+- `node src/batch/run_safety_check.js`: ALL PASS
+- ブラウザデモ確認:
+  `STOP=0` / `SATURATED=0` / `steeringSaturationRatio=0` / `intersectionRelaxed=9 samples`。
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+### 残り
+- 個別地点でまだ低速が強い場合は、currentSampleの `widthMarginM` / `curveSwingM` / `intersectionRelaxed`
+  を見て、幅推定側か道路面キャップ側を追加で詰める。
+
+## 2026-07-09 (40) PLATEAU 3D Tiles 高さ自動接地
+### やったこと
+- PLATEAUの高さ補正を固定 `-3.5m` から、自動接地 + 手動微調整へ変更。
+  `window.PLATEAU_GROUND_ALIGN=true` を既定にし、`PLATEAU_Y_OFFSET` は接地後の微調整値にした。
+- `Box3.setFromObject()` のbbox角変換ではECEF軸bboxが過大になり、Y方向がキロメートル級に膨らむため、
+  実頂点をワールド変換して `minY/maxY` を測る方式に変更。
+- PLATEAU読み込み直後に短時間だけ `update/render` を回し、再生前の静止表示でも接地補正が入るようにした。
+- PLATEAUメトリクスに `autoGroundAlign` / `baseMinY` / `autoShiftM` / `appliedYOffsetM`
+  / `rawHeightM` / `vertexSampleCount` を追加。
+### 検証
+- `node --check src/3d/plateauTiles.js`: OK
+- `node --check src/ui/map3dThree.js`: OK
+- `node --check src/index3dMain.js`: OK
+- ブラウザ静止状態のデモでPLATEAU接地を確認。
+  `baseMinY=-3.53m` / `autoShiftM=+3.53m` / `appliedYOffsetM=+3.53m` / `sampled=true`。
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+### 残り
+- 地域ごとに微妙な地盤差が残る場合は、画面の「PLATEAU高さ微調整」で±0.5m単位で合わせる。
+
+## 2026-07-09 (39) 推定上空障害物による偽MRM停止の抑制
+### やったこと
+- YOLO/StreetView由来の `height` / `h` プロキシ値を、実測タグではなく `estimated` 高さとして扱うように変更。
+  `clearanceHeight` / `maxheight` / 明示confirmed系だけを強制停止に使う。
+- `buildCollisionSolidSet()` に `clearanceReliable` を追加し、推定だけの頭上障害物は
+  autonomy planner の前方ブロッカー、3D衝突チェック、低クリアランスNGから除外。
+- 事前 feasibility 側も同じ高さパーサと信頼度判定へ揃え、3D再生前だけNGになるズレを防止。
+- クリアランスパネルに `ADVISORY` と推定警告数を追加。
+  推定低クリアランスは黄色表示に残すが、MRM停止理由にはしない。
+### 検証
+- `node --check src/3d/clearanceSolids.js src/sim/autonomy/behaviorPlanner.js src/ui/map3dThree.js src/core/feasibility.js src/index3dMain.js src/batch/run_safety_check.js`: OK
+- `node src/batch/run_safety_check.js`: ALL PASS
+  - 推定上空物: `ADVISORY` / hard NGなし
+  - 明示 `clearanceHeight`: `NG` 維持
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+- ブラウザ上の追加確認:
+  - 経路上の `source:yolo heightOnly height:2.0` は `blockerCount=0` / `stopEventCount=0`
+  - 同位置の `clearanceHeight:2.0` は `blockerCount=1` / `stopEventCount=7`
+### 残り
+- まだ残る偽停止は `widthMarginM` / `curveSwingM` 側の過剰保守か、物理障害物denyの位置ズレを個別ログで潰す。
+
+## 2026-07-09 (38) YOLO要素学習環境の追加
+### やったこと
+- 道路面マスク学習とは別系統で、航空写真/標準地図から読める要素を箱/多角形ラベル化する
+  `road_seg/dataset_yolo` 管理を追加。
+  既存クラスは私道/構内通路、駐車場走行面、樹木/植栽、電柱/支柱候補、ガードレール/フェンス、
+  壁/縁石/段差、門/ボラード、搬入口/荷捌き、その他障害物。
+  既存ラベルIDを壊さないため、普通の車道と歩道は末尾クラスとして追加。
+- `road_seg/yolo_annotate.html` と FastAPI `/yolo/ui` `/yolo/fetch` `/yolo/save`
+  `/yolo/update` `/yolo/export_tiles` `/yolo/next_unreviewed` `/yolo/stats` `/yolo/classes` を追加。
+  GSI航空写真/オルソ/標準地図を取得し、ブラウザで箱または多角形を描いてYOLO形式ラベルへ保存できる。
+- 地図範囲のXYZタイルを最大100枚まで一括出力でき、未修正タイルを1枚ずつ開いてレビュー保存できる導線を追加。
+  初期は20〜30タイル程度を人間が直して一度学習し、足りないクラスだけ追加する運用に合わせた。
+- 手作業初期負荷を下げるため、UIのタイル出力は 10/20/30/50/100 枚選択式、既定20枚に変更。
+- 一括出力しただけの未修正タイルは学習から除外し、reviewed保存されたタイルだけ train/val split に入れるよう変更。
+- `dataset_yolo/source/labels` にYOLO detectラベル、`labels_segment` にYOLO-seg多角形ラベルを同時出力。
+  箱だけ描いた場合もsegment側では矩形ポリゴンとして使える。
+- 学習後の検出導線として `/yolo/model_status` `/yolo/predict` と UIの「学習済み検出」を追加。
+  `road_seg/models_yolo/**/weights/best.pt` を使い、開いているタイルに推論結果を下書き追加できる。
+- `road_seg/train_yolo.py` を追加。
+  `dataset_yolo/source` を train/val split へ整形し、Ultralytics YOLOで detect/segment 学習する任意バックエンド。
+  既定は `segment` / `yolo11n-seg.pt`。
+  学習結果は `road_seg/models_yolo/` に隔離。
+- `road_seg.menu` に 8) YOLOラベル作成、9) YOLO学習を追加。
+  `PYENV_VERSION=fa-env python -m road_seg.menu` から起動できる。
+- `road_seg/README.md` と `requirements-yolo.txt` にYOLO学習手順を追加。
+### 検証
+- `PYENV_VERSION=fa-env python -m py_compile road_seg/yolo_dataset.py road_seg/train_yolo.py road_seg/server.py road_seg/menu.py road_seg/smoke.py`: OK
+- `PYENV_VERSION=fa-env python -m road_seg.yolo_dataset`: OK（空dataset統計表示）
+- `PYENV_VERSION=fa-env python - <<'PY' ... _load_ultralytics() ...`: OK（Ultralytics 8.3.0検出）
+- `PYENV_VERSION=fa-env python -m road_seg.smoke`: PASS
+  `/yolo/fetch` `/yolo/save` `/yolo/export_tiles` `/yolo/next_unreviewed` `/yolo/update`
+  `/yolo/model_status` `prepare_split(segment)` も in-process で検証。
+- `printf '7\n\n0\n' | PYENV_VERSION=fa-env python -m road_seg.menu`: OK
+  8) YOLOラベル作成 / 9) YOLO学習の表示と統計出力を確認。
+- `node` で `road_seg/yolo_annotate.html` のインラインJS構文チェック: OK
+- `curl http://127.0.0.1:8012/health`: OK
+- `curl http://127.0.0.1:8012/yolo/ui`: OK（HTML取得）
+### 残り
+- 本体判定へYOLO結果を採用するか、どのYOLO実装/ライセンスで商用配布するかは別判断。
+- 学習後に検出結果を `maskEdits.deny` / obstacle layer へ変換する推論アダプタを追加する。
+
 ## 2026-07-09 (37) 道路面逸脱の停止を警告化
 ### やったこと
 - `src/sim/safetyMonitor.js` に `roadSurfaceMode: 'advisory'` を追加。
