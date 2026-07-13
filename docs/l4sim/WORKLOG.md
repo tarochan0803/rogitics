@@ -1,5 +1,305 @@
 # L4SIM 作業ログ（毎作業ごとに追記: やったこと / 次やること）
 
+## 2026-07-13 (54) 道路規制の自動更新・鮮度管理・fail-safeを実装
+### やったこと
+- Solで更新契約を設計し、Terraがサーバー更新/LKG、Lunaが鮮度UIを実装。統合側で実データ投入と
+  fail-safeを補正した。
+- `web_server.py`へ規制status/refresh APIとバックグラウンド更新を追加。新AOIを動的登録し、OSMを
+  15分、警察庁基準/JARTIC月次カタログを24時間ごとに確認する。
+- OSMスナップショットをSHA-256付きで原子保存し、取得失敗時もlast-known-goodを保持。6時間stale、
+  72時間expired、監査ログ、入力サイズ/bbox面積制限、固定upstreamによるSSRF防止を実装。
+- Overpassクエリを道路way、日本標識、車止め、stop/give_way、restriction relationへ統一し、
+  `out meta`からOSM基準時刻と要素更新時刻を保持。取得snapshotを実際の判定レイヤへ投入する。
+- 警察庁基準は基準ページをhash監視。JARTICは公式typeD JSONカタログを監視し、対象月・公開日・
+  47都道府県artifact件数を記録。Jシステム未契約も明示する。
+- V2へ規制データ鮮度、最終更新、NPA/JARTIC改訂、公式月次/リアルタイム未設定、手動更新ボタンを追加。
+  手動更新成功後は道路レイヤを再読込する。
+- 外部fetcher失敗で規制配列が空になるfail-openを修正。成功ソースだけ置換し、失敗ソースはLKGを維持。
+- staleは規制warning、expired/errorはunknownとして搬入判定へ統合。OSMだけ取得できても規制確認済みの
+  PASSにはしない。地図へOSM attributionを常時表示。
+- compiled worldの規制TTLを15分へ短縮し、読込時に管理APIの最新規制をmergeする。
+- `logistics-os-live.service` をユーザーsystemdへ永続登録し、8080番と更新スレッドを自動起動する。
+### 検証
+- Python更新サービス/API: 8 tests PASS。
+- 規制詳細回帰: 30 checks PASS（LKG維持・鮮度fail-safeを含む）。
+- `compile_world --selfcheck`: ALL PASS。
+- 実オンライン取得: 東京駅AOI、OSM要素83件、OSM基準時刻/hash/endpoint保存成功。
+- V2 phase7 smoke: ok、road=365、sidewalk=13、regulationFeatures=85、requestFailuresなし。
+- 手動更新UI: force refresh→最新snapshot→道路再読込、状態/時刻/件数更新を確認。
+### 残り
+- JARTIC typeD都道府県ZIPは東京だけでも約40MB。対象都道府県・保存容量・月次取込範囲を確定後、
+  k_2.1 parserへ接続する。現状はカタログ更新を検知し、未取込を明示してfail-safeにする。
+- JARTIC Jシステムは商用契約・認証情報受領後に5分更新fetcherを登録する。契約なしで公開画面を
+  スクレイピングする実装は行わない。
+
+## 2026-07-13 (53) 縦方向動力学（勾配・摩擦・積載系）＋gradeAtM配線＋切り返し挙動の総仕上げ
+### やったこと
+- **縦方向動力学**（ユーザー要望①: ゲームエンジンは使わず教科書物理・決定論維持）:
+  - `vehicleRiskModel.js` に `RISK_TUNING.longitudinal`（muDry 0.7 / muWet 0.5 /
+    comfortDecel 2.8 / minDecel 0.8 / comfortAccel 1.2）と
+    `effectiveBrakeDecelMSS({gradePct, surface, vehicleConfig})` /
+    `effectiveAccelMSS(...)` を追加（下り勾配で制動力が g·sinθ ぶん食われ、上りで加速が鈍る）。
+  - `physics.js`: `simulatePathPoses` / `createKinematicPathFollower` に `opts.gradeAtM`（省略可）
+    と `config.surfaceCondition`('dry'|'wet') を追加。先読みブレーキも同じ減速度を使用。
+    **gradeAtM 未指定・乾燥なら従来と bit 一致**（後方互換、run_safety_check で検証）。
+  - `behaviorPlanner.js`: `obstacleLimitMS` の停止距離計算をサンプル勾配で
+    `effectiveBrakeDecelMSS` を引く方式へ（物理再生と判定が同一の真実源）。
+    サンプルに `brakeDecelMSS` を追加。
+  - `map3dThree.js`: 追従器生成時に `gradeAtM: (s)=>sampleAutonomyAtProgress(s)?.gradePct||0`
+    を配線（ワールドコンパイラ焼き込み勾配 → planner サンプル → 追従器制動、の一気通貫）。
+- **切り返し挙動の最終形**（(50)(52)との合算で「通れるなら切り返して通れ/通れないなら止まれ」完成）:
+  切り返しプローブ実測 — デモ103.2/103.4m完走・MRMなし・K-turn 1回
+  （hybrid-astar、長さ12.8m、方位掃引57°、ギア切替1、27ポーズ）。
+### 検証
+- 全nodeバッテリー PASS: safety(縦動力学テスト込み) / sim_repro 4項目 / kinematics 9 /
+  hybrid_astar 3 / plateau_ground。
+- `run_switchback_probe.js`: 全アサートPASS（上記の完走+K-turn実測）。
+- 教師回帰36走行（teacher_rerun5）: **全36走行PASS** — observedPositive 12/12 (falseNegative=0) /
+  inferredPassable 8/8 (conflict=0) / failMonitor=0 / pageErrors=0 / runErrors=0。
+  縦方向動力学+挙動白黒化による悪化なし（teacher_rerun4 と同一の合格水準を維持）。
+### 運用メモ（ヒヤリハット）
+- phase7スモークは外部障害（GSI逆ジオコーダ mreversegeocoder.gsi.go.jp が 503）で実行不可。
+  スモークのエラーフィルタは 429/504 を除外するが 503 を通すため偽FAILになる。GSI復旧後に再実行。
+- 検証目的でも**共有ファイルのHEADベースライン一時差し替えは禁止**にしたい: ライブ配信サーバ
+  （8080が実ファイルを直配信）では差し替え中の状態を他の検証が観測して「巻き戻り事故」に見える。
+  比較が要る場合は scratchpad へコピーして diff すること。
+
+## 2026-07-13 (52) 3D自動走行の「挙動の白黒化」（通れないなら止まる／横移動コード根絶）
+### やったこと
+- 設計指示「横移動・無意味な切り返しをなくす。通れるなら切り返しで通れ、通れないなら止まれ」を実装。
+  編集は `src/ui/map3dThree.js` のみ（+本WORKLOG）。physics/vehicleRiskModel/behaviorPlanner は不変更。
+- ①「切り返しでも通れないなら止まる」: `beginCornerSwitchback` で `forwardPassFeasible` が不可
+  （contact/持続逸脱）かつ `planCornerManeuver` が null（infeasible/ピルエット棄却）のとき、監視徐行継続を
+  やめて `triggerMrmStop3D('maneuver_infeasible', { sM, forwardBlockReason, progressM })` で理由付き停止。
+  発火時点＝コーナー手前が自然な停止位置。RecoveryDebug に source='decision' /
+  rejectReason='maneuver_infeasible' の監査レコードを追加。
+- ②「直線の検証済みブロッカーでも這わずに止まる」: 新設 `verifyAheadBlocked(progressM, vc)` が現在位置から
+  前方15mを `forwardPassFeasible` と同じフットプリント掃引（0.75m刻み・`poseClearsSolids3D`）で検査し、
+  接触があれば true（5m刻みステーションでキャッシュ）。再生ループで `currentLimit.mode==='MONITORED_CRAWL'`
+  かつ blocker前方余裕 `forwardClearanceM<=12` のときだけ評価し、true なら
+  `triggerMrmStop3D('verified_blocker_ahead', ...)`。掃引クリーンなら従来どおり徐行（(44)偽STOP対策を維持）。
+  overheadブロッカーの既存ハードMRMは不変更。例外は「検証不能→徐行継続」にフェイルセーフ。
+- ③ 横移動コードの物理的根絶: デッドコード `findPlayableRecoveryEvent` / `beginRecoveryPlayback` /
+  `lerpPoint` と、`advanceRecoveryPlayback` の lerp後退・復帰フェーズ（`lerpPoint(rp.stop,rp.shifted)` /
+  `lerpPoint(rp.shifted,rp.resume)`）を削除。K-turn完了ブランチ（`rp.t=1e9` フォールスルー）は温存。
+  横方向へ車両を動かすコードは残存なしを grep で確認（`pos=basePos` を直置き、`autoDriveOffsetM` は常時0で
+  読み取りは表示専用、`approachAutoDriveOffset`/`chooseAutoDriveTargetOffset` は呼び出し元不在・軌道preview
+  の `offsetXZLaterally` は表示専用）。`lerpAngleRad` は `resampleKTurnWorldPoses` が使うため温存。
+- ④ 切り返し回数の上限: 1回の再生で accepted な K-turn が6回を超えたら
+  `triggerMrmStop3D('maneuver_loop_suspected', ...)`（病的ループの最終安全網）。`switchbackAcceptedCount3D` を
+  両リセット点で0初期化。`verifyAheadCache3D` も同様にリセット。
+- HUD: MRM理由→和名マップ `MRM_REASON_LABEL` を新設（maneuver_infeasible='通行不能(検証済)'、
+  verified_blocker_ahead='前方障害物(検証済)'、maneuver_loop_suspected='切り返し反復検出' 等）。headline補足に配線。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK。
+- `run_safety_check` / `run_sim_repro`(4/4) / `run_vehicle_kinematics_check`(9/9) / `run_hybrid_astar_check`(3/3)
+  / `run_plateau_ground_check`: 全PASS維持。
+- `run_switchback_probe.js`: 全アサートPASS（3件）。新挙動を実観測: status=MRM_STOP /
+  mrmReason=maneuver_infeasible、source='decision' の監査レコードを確認（従来は監視徐行で継続していた急コーナー）。
+- `index3d:smoke:phase7`: **外部サービス GSI逆ジオコーダ(`mreversegeocoder.gsi.go.jp`)が HTTP 503 の障害中**で
+  実行不可。HEAD版へ一時差し替えて同条件で確認し、baselineも同じ503で失敗＝本変更由来ではないと確定
+  （本変更はネットワーク要求を一切しない）。加えて `--demo` の phase7 は `runPhase7Validation`
+  （=`buildCurrentAutonomyReport` のレポート層。本ファイル外）を検査するもので `playThree3D` を呼ばず、
+  本変更の走行ループを一切exerciseしない＝numbers変化なし。走行ループを踏むのは phase7-playback のみ。
+### 次やること
+- GSI 503復旧後に `index3d:smoke:phase7` / `:phase7-playback` を再走し groundStopEvents 等を確認。
+- 親側で教師回帰（run_teacher_site_routes.js）を統合後に一度だけ実施。verified_blocker_ahead /
+  maneuver_infeasible の停止位置が教師期待と乖離しないか観測。
+
+## 2026-07-10 (51) 物流向け道路規制をway/node/relationから取得・経路評価へ統合
+### やったこと
+- 規制共通モデルを拡張し、右左折/直進/転回禁止・指定方向、危険物、最低速度、有料道路、
+  固定車止め/管理ゲート、チェーン必須、工事/季節/冬期、駐停車、一時停止/譲れを追加。
+- OSM `restriction` relation の from/via/to geometry と `except` を保持し、経路の進入順序・方位が
+  一致する `no_*` / `only_*` だけをblockする。交差点付近の別方向は誤blockしない。
+- Overpassのオンライン取得と `compile_world` の両方へ、`traffic_sign=JP:3*`、barrier、stop/give_way、
+  restriction relationを配線。2D取得結果の `regulations` も候補経路評価前にactive layerへ反映する。
+- V2へ「危険物積載車両」「タイヤチェーン装着済み」を追加し、候補採点・最終搬入判定・ローカル
+  graphへ共通で渡す。危険物車両だけhazmat規制を適用し、チェーン必須道路は装着状態で判定する。
+- 固定barrierは経路直上2.5m以内だけblock、管理gateは3.5m以内を要許可とし、道路脇の車止めによる
+  偽blockを抑制。駐停車規制は通過禁止にせず、目的地30m圏の荷役警告として評価する。
+- `graph.js` では危険物禁止・工事閉鎖・チェーン必須を除外し、有料/冬期/季節道路は運用コストを加算。
+  JARTIC等の外部レコードadapterと2D/判定パネルの表示名も同じ規制型へ拡張した。
+### 検証
+- `node src/batch/run_regulation_detail_check.js`: 28項目 ALL PASS。
+- `node src/batch/compile_world.js --selfcheck`: ALL PASS（way規制 + turn relationをworldへ格納）。
+- `node src/batch/run_safety_check.js`: ALL PASS。
+- `node src/batch/run_sim_repro.js`: 4/4 PASS。
+- `node src/batch/run_vehicle_kinematics_check.js`: 9/9 PASS。
+- `node src/batch/run_hybrid_astar_check.js`: 3/3 PASS。
+- `run_index3d_smoke.js --phase7-playback`: phase7/playbackともok、requestFailures/pageErrorsなし。
+  東京の実オンラインAOIで roads=365、regulations=35を取得し、2D取得からactive layerへの配線も確認。
+- `run_l4_route_regression.js --worlds 5b58dda1 --routes 2`: 2/2 PASS、FAIL=0、pageErrors=0。
+### 残り
+- 一時停止/譲れ/最低速度は規制情報の取得・評価・表示まで。停止線位置と停止時間を使う3D交通行動は
+  未接続なので、実車挙動へ反映する場合は専用のtraffic-control plannerを追加する。
+- OSM未登録は「規制なし」の保証ではない。商用出荷では警察・道路管理者の正規データを同じadapterへ
+  供給し、現地標識を優先する。祝日/学校日条件と車線単位規制も後続対応。
+
+## 2026-07-10 (50) 3D自動走行に「切り返し(K-turn)の要否判定ゲート」を実装
+### やったこと
+- 設計指示「切り返しなどをするとき本当はいらないなら入らないという判断をしてもいい」を実装。
+  前進のまま通れるコーナーではK-turnを実行せず、K-turnは幾何的に本当に必要なときの最終手段にする。
+- 編集は `src/ui/map3dThree.js` のみ。`beginCornerSwitchback` の `markHandledSwitchbackZone` 直後・
+  `planCornerManeuver` 呼び出しの**前**に前進通過可否ゲート `forwardPassFeasible(vc, sM, resumeStationM)`
+  を新設して配線。
+- `forwardPassFeasible` の判定（掃引は既算の resumeStationM を再利用）:
+  - s = max(0, sM-3) から resumeStationM+2 まで 0.75m 刻みに再生経路
+    （`_sampleRouteAt`/`_routeHeadingAt`）をフットプリントで掃引。サンプル≤~40（≤50）。
+  - ① 接触チェック: 全ポーズで `poseClearsSolids3D`。1つでも接触→前進不可（reason='contact'）。
+    道路帯逸脱はadvisoryなので ok に効かず接触のみ棄却（既存規約どおり）。
+  - ② 持続的大幅逸脱チェック: `safetyRoadSurfaceGeo` + turf がある時のみ、各ポーズの道路面外比率を
+    Safety Monitor(roadOutsideMetrics)と同一材料（`truckFootprintFeatureForSafety` +
+    turf.area/turf.difference、turf.booleanWithin短絡）で測り、「outsideRatio>0.5 かつ 面積>8m²」が
+    **連続3.5m以上**続けば前進不可（reason='sustained_excursion'）。~1.6m/sの徐行で3.5m≈2.2s＝
+    持続昇格MRM(2.0s)を踏むため。単発・短区間の逸脱はadvisory相当で許容。turf無/失敗時は②をスキップ。
+  - 例外は try/catch で握って「前進不可扱い」（=従来のK-turn計画へ）にフェイルセーフ。
+- 通過可能なら K-turn を実行せず `return false`（監視徐行で通す。ゾーンはhandled済みで再評価されない）。
+- デバッグ記録: 発火のたびに `recoveryDebug3D.maneuvers` へ非acceptedレコードを積む
+  （probe は accepted のみ検査するので互換）。source='forward-pass-check'、
+  rejectReason は not_needed / forward_blocked_contact / forward_blocked_excursion で監査可能。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK。
+- `node src/batch/run_safety_check.js`: ALL PASS（17項目）。
+- `node src/batch/run_sim_repro.js`: 4/4 PASS。
+- `node src/batch/run_vehicle_kinematics_check.js`: 9/9 PASS。
+- `node src/batch/run_hybrid_astar_check.js`: 3/3 PASS。
+- `node src/batch/run_plateau_ground_check.js`: PASS。
+- `run_switchback_probe.js`: 全アサートPASS（accepted幾何OK / accepted数1<=3 / pageerror0）。
+  デモ急コーナー(sM=84)で forward-pass-check が forward_blocked_contact を返し（前進では接触＝
+  切り返しが本当に必要）、hybrid-astar のK-turnが accepted。ゲートが正しく「必要」と判定した実例。
+- `index3d:smoke:phase7`: 全 ok=true（requestFailures/pageErrorsなし）。
+- 教師回帰（teacher_rerun4, 2t/3t/4t_flat, 36走行）: **全36走行 PASS**。
+  observedPositive 12/12 OK (falseNegative=0) / inferredPassable 8/8 OK (conflict=0) /
+  failMonitor=0 / pageErrors=0 / runErrors=0 — 合格基準（teacher_rerun3同等以上）達成。
+  注: weakNegative は supports 0 / review 16 になった（旧supports 4件も完走PASS化）。
+  weakNegativeは「その車格を配車しなかった」だけの弱ラベルであり、幾何上は通れる判定。
+  site-0003 の4t等は業務側の実地確認で hard NG かどうか裏取りする（(48)残りと同件）。
+### 残り
+- 実サイトで「幅推定が細めなだけの前進可コーナー」でのK-turnスキップ発生数を計測し、
+  閾値（連続3.5m/0.75m刻み）の実データチューニング。デモルートは接触ありコーナーのみで発生0件。
+
+## 2026-07-10 (49) 2t積載量区分・スクールゾーン・条件付き道路規制の取得/判定を拡張
+### やったこと
+- 日本の「2t車規制」を総重量制限と混同しないよう、車両プリセットへ `ratedPayloadT`
+  （2/3/4/10/15t）を追加し、規制型 `payload_class_restriction` を新設。
+  `JP:305-2` + `JP:503-C[2t]` は警察庁基準どおり「最大積載量2t以上」を境界値込みで不可にする。
+- OSM規制を拡張:
+  - `maxweightrating[:hgv|:goods]`、`maxaxleload`、`maxlength`、`maxspeed[:hgv]`
+  - `access/vehicle/motor_vehicle/motorcar/hgv/goods/truck:conditional`
+  - `school_zone=yes`、`hazard=school_zone`、`maxspeed:variable=school_zone` 等
+  - `traffic_sign=JP:302/303/304/305/305-2`（道路way + 標識node）
+- 条件式の安全な部分評価を追加。車両条件（weight/weightrating/payload/axleload/寸法）と
+  曜日・時間帯（日本時間、明示 `assessmentTime`）を評価し、未対応の祝日/学校日/天候条件や
+  出発時刻未指定は誤ってPASS/NGにせず warning にする。複数条件節は有効節固有の制限値を使う。
+- 経路パネルへ「規制判定日時（日本時間）」を追加し、現在の日本時間を初期値として候補経路評価と
+  最終搬入判定へ同一日時を渡す。将来時刻へ変更すると経路候補を再評価する。
+- スクールゾーンはそれ自体を法的通行止めとせず注意扱い。併記された時間帯通行止めだけを
+  条件成立時にblockする。`amenity=school` の近接だけから規制を捏造しない。
+- 標識nodeだけで対象道路が確定しない場合は `traffic_sign_road_match_required` warning とし、
+  交差点付近の別道路を誤blockしない。wayへ付いた明示規制は経路探索段階でも除外する。
+- オンライン3Dワールド取得と `compile_world` の両方へ規制タグ/標識点取得を配線。
+  xROAD/JARTIC等の外部レコードも「特定の最大積載量」「車両総重量」「軸重」「速度」等を
+  同じ共通モデルへ正規化できるよう adapter を拡張。
+- 2D/判定パネルへ最大積載量区分、車両総重量区分、軸重、長さ、速度、スクールゾーンの表示名を追加。
+### 検証
+- `node src/batch/run_regulation_detail_check.js`: 16項目 ALL PASS。
+- `node src/batch/compile_world.js --selfcheck`: ALL PASS。
+- `node src/batch/run_safety_check.js`: ALL PASS。
+- `node src/batch/run_sim_repro.js`: 4/4 PASS。
+- `node src/batch/run_vehicle_kinematics_check.js`: 9/9 PASS。
+- `node src/batch/run_hybrid_astar_check.js`: 3/3 PASS。
+- `run_index3d_smoke.js --phase7-playback`: `ok=true`、requestFailures/pageErrorsなし。
+  実オンラインAOIで roads=365、追加規制標識node=0（対象AOIのOSM登録状況）。
+- `run_l4_route_regression.js --base http://127.0.0.1:8080 --worlds 5b58dda1 --routes 2`:
+  2/2 PASS、FAIL=0、pageErrors=0。
+### 残り
+- OSM未登録を「規制なし」と保証することはできない。商用出荷では警察/道路管理者の正規規制データを
+  xROAD/JARTIC adapterへ供給すること。
+- `restriction` relation、祝日/学校日カレンダー、標識node→対象wayの方向付き厳密map matchingは次段。
+
+## 2026-07-10 (48) 切り返し修正の最終検証＋回帰プローブ常設＋デモフローの再現性メモ
+### やったこと
+- (47) 切り返し修正の最終検証を完了:
+  - `run_switchback_probe.js`（新設・puppeteer回帰プローブ）: 全アサートPASS。
+    デモの急コーナー(sM=84)で hybrid-astar / arc-template とも正しく infeasible 判定
+    →監視徐行へフォールバック（ピルエット軌道の採用ゼロ、accepted maneuver 0件）。
+  - 全nodeバッテリー PASS: safety(17) / sim_repro(4) / vehicle_kinematics(9) /
+    hybrid_astar(3) / plateau_ground。教師回帰は falseNegative=0 / failMonitor=0(旧4) /
+    pageErrors=0（teacher_rerun3）。
+- **デモフローの再現性メモ（既知の揺らぎ・要注意）**: `index3DRunDemo()`→即`index3DPlay()` は、
+  建物/フィクスチャの非同期ロードと再生開始の競合で結果が揺れる
+  （同一コードで 93.3m MRM(safety_invariant_violation) と 103.1m 完走OK の両方を実測）。
+  compiled world を先にロードする教師回帰/バッテリー系は決定論を維持。
+  デモ検証時は worldLoaded===true を待ってから play すること。恒久対応するなら
+  「再生開始時にロード未完なら開始を遅延」のガードを playThree3D に入れる。
+### 検証
+- 上記の通り（プローブ・全バッテリー・教師回帰）。
+### 残り
+- デモフローの「ロード完了前play」ガード（低優先・視覚デモのみの問題）。
+- 教師回帰の weakNegative REVIEW 群（通れてしまう弱ラベル）の実地確認は業務側の判断待ち。
+
+## 2026-07-10 (47) 切り返し(K-turn)暴走バグ修正: Hybrid A*統合＋ピルエット拒否＋スタック検出MRM
+### やったこと（編集は `src/ui/map3dThree.js` のみ）
+- 症状: 交差点コーナーで切り返しが発火すると車両フットプリントがその場でほぼ一回転する
+  扇状の軌跡を残し、前方クリアランス0mのまま0km/hでスタックし完走しなかった。
+- 根本原因: `planKTurnPoses()` の整列前進フェーズが resume 到達まで無制限に前進し、幾何が
+  ずれるとフルロック円（半径4〜6m）を一周する軌道をそのまま正規プランとして返していた（ピルエット）。
+- **主修正**: 検証済み `src/core/hybridAStar.js` を切り返しプランナとして統合。
+  - `planSwitchbackHybrid()`: 物理frame(x, y=-z, theta=π/2-h)へ変換して `planHybridAStarManeuver`
+    を呼び、成功時はワールドframeへ逆変換（操舵角は座標反射で符号反転）＋0.5m間隔へ弧長再サンプル
+    （`resampleKTurnWorldPoses`、前後進切替点に停止ホールドholdSを挿入）。
+  - isPoseValid は poseClearsSolids3D と等価な接触判定のみ（advisory道路帯逸脱は単一ポーズでは
+    ok に影響しないため、数千回呼ばれる内側ループで高コストな turf.difference を回避）。
+  - `planCornerManeuver()`: Hybrid A* 優先→失敗時 `planKTurnPoses` フォールバックの一元化。
+- **ピルエット拒否ガード（最終安全網）**: どちらのプランナ由来でも累積|方位変化|>270° または
+  総経路長>45m のプランは棄却し、既存の監視徐行継続（infeasible分岐）へ落とす。
+- **planKTurnPoses整列フェーズの有界化**（フォールバック側）: (a)累積前進15m、(b)|err|が3ステップ
+  連続で減少しない、(c)累積方位掃引120°超 のいずれかで打ち切り不成立にする。
+- **スタック検出→理由付きMRM**: 復旧非実行中に実速度<0.05m/sのまま完走せず5秒(sim時間)以上停滞したら
+  `triggerMrmStop3D('stalled_no_progress', {progressM, sample})` で正直に停止（無限フリーズ根絶）。
+  overheadの正当STOPは既存MRMが先に出るため誤爆しない。
+- **デバッグフック**: `window.index3DGetRecoveryDebug()` を公開（probe契約: `{maneuvers:[...], count}`、
+  各要素 source/sM/lengthM/headingSweepDeg/gearChanges/poseCount/accepted/rejectReason、棄却分も記録）。
+  `playThree3D` 開始時にリセット。
+### 検証
+- `node --check src/ui/map3dThree.js`: OK
+- batch回帰 全PASS維持: `run_safety_check`(ALL PASS) / `run_sim_repro`(4項目ALL PASS) /
+  `run_vehicle_kinematics_check`(9 passed) / `run_hybrid_astar_check`(3 passed) /
+  `run_plateau_ground_check`(PASS)。
+- `index3d:smoke:phase7`: ok維持（phase7.ok=true, requestFailures=[], pageErrors=0）。
+- 座標変換/再サンプル/ホールド挿入を実 hybridAStar モジュールで単体検証:
+  entry/exit方位の往復一致、goal許容内、0.5m間隔（弧長）、gear切替=holdS=2、
+  再サンプルのコード誤差は最大1cm（フットプリント余裕内・毎tickでSafety Monitor再検証）。
+- 教師回帰: `run_teacher_site_routes.js --vehicles 2t_flat,3t_flat,4t_flat --timeout 75`
+  → observedPositive falseNegative=0 / pageErrors=0（結果は teacher_rerun3）。
+### 残り
+- 別作業者作成の `src/batch/run_switchback_probe.js`（並行）で K-turn 機動の source/受理率を
+  継続監視。真に不可能なコーナーの failMonitor は正直な安全停止として許容。
+
+## 2026-07-10 (46) 旧式の横移動recovery再生を停止し、局所回避経路を車両物理で再生
+### やったこと
+- `map3dThree` の旧 `beginRecoveryPlayback()` は「後退→横へ平行移動→復帰」の補間で、
+  車両物理に反する見え方を出していたため、自動再生から発火しないようにした。
+- 旧 recovery trajectory preview も通常は非表示にし、必要な場合だけ
+  `window.LEGACY_RECOVERY_PREVIEW=true` で表示するデバッグ扱いに変更。
+- 地上障害物/狭路の迂回は `localAvoidance` が作った回避済み経路を
+  `simulatePathPoses()` の車両モデルで走らせる形に統一。
+- `phase7-playback` の合否判定を、旧 `recoveryPlaybackCount` 前提から
+  `drivePlaybackRouteSource=route-normalizer+avoidance` の物理再生完了判定へ更新。
+### 検証
+- `node --check src/ui/map3dThree.js && node --check src/index3dMain.js && node --check src/core/localAvoidance.js && node --check src/core/physics.js && node --check src/3d/plateauTiles.js`: OK
+- `node src/batch/run_safety_check.js`: safety check ALL PASS
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7`: OK
+- `PUPPETEER_NO_SANDBOX=1 LOGISTICS_INDEX3D_URL=http://127.0.0.1:8080/index3D_V2.0.html npm --prefix src/batch run index3d:smoke:phase7-playback`: OK
+  (`recoveryPlaybackCount=0`, `drivePlaybackRouteSource=route-normalizer+avoidance`, safety OK)
+- `PUPPETEER_NO_SANDBOX=1 node src/batch/run_teacher_site_routes.js --base http://127.0.0.1:8080 --limit 12 --timeout 90`:
+  routeLevel observedPositive 12/12 OK、inferredPassable 8/8 OK、falseNegative 0、pageErrors 0。
+  weakNegative の PASS はラベルレビュー対象として記録。
+### 残り
+- ユーザー実地点でまだ停止する場合は、横移動recoveryではなく道路面/建物/安全監視の実判定として
+  trace を見て個別に潰す。
+
 ## 2026-07-10 (45) simulatePathPosesの停止テール修正 + puppeteer no-sandbox対応(batch2件)
 ### やったこと
 - `src/core/physics.js:simulatePathPoses()` に停止テール対策を追加。`speedLimitAtM` が

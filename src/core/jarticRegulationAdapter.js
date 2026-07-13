@@ -28,6 +28,7 @@ import {
   REGULATION_SEVERITY,
   REGULATION_TYPES,
   normalizeRegulation,
+  parseKmhFromValue,
   parseMetersFromValue,
   parseTonsFromValue
 } from './regulationModel.js';
@@ -95,7 +96,21 @@ function resolveType(record) {
   if (!text) return null;
   if (/高さ|最大高|height/i.test(text)) return REGULATION_TYPES.MAX_HEIGHT;
   if (/幅員|車幅|最大幅|幅制限|width/i.test(text)) return REGULATION_TYPES.MAX_WIDTH;
-  if (/重量|総重量|重さ|weight/i.test(text)) return REGULATION_TYPES.MAX_WEIGHT;
+  if (/特定の最大積載量|最大積載量|積載量|payload/i.test(text)) return REGULATION_TYPES.PAYLOAD_CLASS;
+  if (/許容最大重量|車両総重量|総重量|weightrating/i.test(text)) return REGULATION_TYPES.MAX_WEIGHT_RATING;
+  if (/軸重|axle/i.test(text)) return REGULATION_TYPES.MAX_AXLE_LOAD;
+  if (/重量|重さ|weight/i.test(text)) return REGULATION_TYPES.MAX_WEIGHT;
+  if (/長さ|車長|length/i.test(text)) return REGULATION_TYPES.MAX_LENGTH;
+  if (/最低速度|minspeed|minimum.?speed/i.test(text)) return REGULATION_TYPES.MIN_SPEED;
+  if (/最高速度|速度制限|maxspeed|speed/i.test(text)) return REGULATION_TYPES.MAX_SPEED;
+  if (/スクールゾーン|通学路|school.?zone/i.test(text)) return REGULATION_TYPES.SCHOOL_ZONE;
+  if (/危険物|火薬|爆発物|劇物|hazmat|dangerous.?goods/i.test(text)) return REGULATION_TYPES.HAZMAT;
+  if (/チェーン|滑り止め|snow.?chain/i.test(text)) return REGULATION_TYPES.CHAIN_REQUIRED;
+  if (/有料|料金|課金|toll/i.test(text)) return REGULATION_TYPES.TOLL;
+  if (/工事|冬期|季節|閉鎖|seasonal|winter/i.test(text)) return REGULATION_TYPES.SEASONAL;
+  if (/駐停車|駐車禁止|停車禁止|no.?parking|no.?stopping/i.test(text)) return REGULATION_TYPES.PARKING_RESTRICTION;
+  if (/一時停止|止まれ|stop/i.test(text)) return REGULATION_TYPES.STOP_CONTROL;
+  if (/門扉|ゲート|車止め|barrier|gate|bollard/i.test(text)) return REGULATION_TYPES.BARRIER;
   if (/一方通行|oneway/i.test(text)) return REGULATION_TYPES.ONEWAY;
   if (/指定方向外|右折|左折|転回|uターン|turn/i.test(text)) return REGULATION_TYPES.TURN_RESTRICTION;
   // 大型・貨物系の通行止めはトラック禁止として扱う
@@ -130,6 +145,60 @@ function buildValue(record, type) {
       );
       return { value: { tons: tons ?? null, raw }, ok: tons != null };
     }
+    case REGULATION_TYPES.MAX_WEIGHT_RATING:
+    case REGULATION_TYPES.MAX_AXLE_LOAD: {
+      const tons = firstFinite(
+        record.tons, record.value?.tons, record.limit,
+        parseTonsFromValue(record.value?.raw), parseTonsFromValue(raw)
+      );
+      return { value: { tons: tons ?? null, raw }, ok: tons != null };
+    }
+    case REGULATION_TYPES.PAYLOAD_CLASS: {
+      const minimumT = firstFinite(
+        record.minimumT, record.ratedPayloadT, record.payloadT, record.value?.minimumT,
+        record.tons, record.limit, parseTonsFromValue(record.value?.raw), parseTonsFromValue(raw)
+      );
+      return { value: { minimumT: minimumT ?? null, raw }, ok: true };
+    }
+    case REGULATION_TYPES.MAX_LENGTH: {
+      const meters = firstFinite(
+        record.meters, record.value?.meters, record.limit,
+        parseMetersFromValue(record.value?.raw), parseMetersFromValue(raw)
+      );
+      return { value: { meters: meters ?? null, raw }, ok: meters != null };
+    }
+    case REGULATION_TYPES.MAX_SPEED: {
+      const kmh = firstFinite(
+        record.kmh, record.value?.kmh, record.limit,
+        parseKmhFromValue(record.value?.raw), parseKmhFromValue(raw)
+      );
+      return { value: { kmh: kmh ?? null, raw }, ok: kmh != null || raw != null };
+    }
+    case REGULATION_TYPES.MIN_SPEED: {
+      const kmh = firstFinite(
+        record.kmh, record.value?.kmh, record.limit,
+        parseKmhFromValue(record.value?.raw), parseKmhFromValue(raw)
+      );
+      return { value: { kmh: kmh ?? null, raw }, ok: kmh != null || raw != null };
+    }
+    case REGULATION_TYPES.SCHOOL_ZONE:
+      return { value: { raw, kmh: firstFinite(record.kmh, record.value?.kmh) }, ok: true };
+    case REGULATION_TYPES.HAZMAT: {
+      const permitLike = PERMIT_LIKE_RE.test(raw || '');
+      return { value: { raw: permitLike ? 'permit' : 'no' }, ok: true };
+    }
+    case REGULATION_TYPES.TOLL:
+      return { value: { raw: 'yes', charge: record.charge ?? record.value?.charge ?? null }, ok: true };
+    case REGULATION_TYPES.CHAIN_REQUIRED:
+      return { value: { raw: raw || 'required' }, ok: true };
+    case REGULATION_TYPES.SEASONAL:
+      return { value: { raw, construction: /工事|construction/i.test(raw || ''), closed: record.closed !== false }, ok: true };
+    case REGULATION_TYPES.PARKING_RESTRICTION:
+      return { value: { raw: /駐停車|停車禁止|no.?stopping/i.test(raw || '') ? 'no_stopping' : 'no_parking' }, ok: true };
+    case REGULATION_TYPES.STOP_CONTROL:
+      return { value: { raw: raw || 'stop', control: 'stop' }, ok: true };
+    case REGULATION_TYPES.BARRIER:
+      return { value: { raw, kind: record.kind || record.barrier || 'gate', access: record.access || null }, ok: true };
     case REGULATION_TYPES.ACCESS: {
       // 全面通行止め=no(BLOCK) / 許可車のみ等=destination(要許可)
       const permitLike = PERMIT_LIKE_RE.test(raw || '');
@@ -153,8 +222,13 @@ function defaultSeverityFor(type) {
   switch (type) {
     case REGULATION_TYPES.ACCESS:
     case REGULATION_TYPES.NO_TRUCK:
+    case REGULATION_TYPES.HAZMAT:
       return REGULATION_SEVERITY.BLOCK;
     case REGULATION_TYPES.TIME_RESTRICTION:
+    case REGULATION_TYPES.CHAIN_REQUIRED:
+    case REGULATION_TYPES.SEASONAL:
+    case REGULATION_TYPES.PARKING_RESTRICTION:
+    case REGULATION_TYPES.BARRIER:
       return REGULATION_SEVERITY.WARNING;
     default:
       return REGULATION_SEVERITY.INFO;
@@ -325,17 +399,24 @@ export async function fetchExternalRegulations({ bbox, routeLL, sources, signal 
   const wanted = (Array.isArray(sources) && sources.length ? sources : getRegisteredRegulationSources())
     .map(lower);
   const collected = [];
+  const succeeded = new Set();
+  const previous = getActiveExternalRegulations();
   for (const source of wanted) {
     const fn = fetchers.get(source);
     if (!fn) continue;
     try {
       const records = await fn({ bbox, routeLL, signal });
       collected.push(...buildExternalRegulationLayer(records, { source, ...(SOURCE_DEFAULTS[source] || {}) }));
+      succeeded.add(source);
     } catch (err) {
       if (typeof console !== 'undefined') console.warn(`[regulation] fetcher "${source}" failed:`, err);
     }
   }
-  const merged = mergeRegulationLayers(collected);
+
+  // Upstream failure is not evidence that a restriction disappeared. Replace
+  // only sources that completed successfully and retain failed sources' LKG.
+  const retained = previous.filter((regulation) => !succeeded.has(lower(regulation?.source)));
+  const merged = mergeRegulationLayers(retained, collected);
   setActiveExternalRegulations(merged);
   return merged;
 }

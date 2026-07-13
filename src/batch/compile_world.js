@@ -47,17 +47,20 @@ function parseArgs(argv) {
 
 // ── ディスクキャッシュ付き fetch（--offline はキャッシュのみ） ────────────────
 // 更新ポリシー: GSIタイル(地形・道路形状)は事実上静的→無期限キャッシュ。
-// Overpass(建物・規制)は変わり得る→TTL 7日、--refresh で強制再取得（定期更新の実装）。
-const OVERPASS_TTL_S = 7 * 24 * 3600;
+// 規制は短いTTL、建物は長めのTTL。--refresh は両方を強制再取得する。
+const OVERPASS_REGULATION_TTL_S = 15 * 60;
+const OVERPASS_BUILDING_TTL_S = 6 * 60 * 60;
 
 function makeCachedFetch({ offline, refresh, fnv1a }) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
   return async function fetchText(url) {
     const file = path.join(CACHE_DIR, fnv1a(url) + '.body');
     const isOverpass = url.includes('overpass-api.de');
+    const isRegulationOverpass = isOverpass && /maxheight|traffic_sign|restriction|barrier/i.test(url);
+    const overpassTtlS = isRegulationOverpass ? OVERPASS_REGULATION_TTL_S : OVERPASS_BUILDING_TTL_S;
     if (fs.existsSync(file)) {
       const ageS = (Date.now() - fs.statSync(file).mtimeMs) / 1000;
-      const expired = isOverpass && !offline && (refresh || ageS > OVERPASS_TTL_S);
+      const expired = isOverpass && !offline && (refresh || ageS > overpassTtlS);
       if (!expired) {
         const body = fs.readFileSync(file, 'utf8');
         return body === '\x00MISS' ? null : body;
@@ -187,23 +190,77 @@ async function fetchOsmBuildings(bbox, fetchText) {
   return feats;
 }
 
-// ── OSM規制付きway取得（寸法制限・一方通行。生タグのまま焼き込み、正規化はロード時） ──
+// ── OSM規制取得（道路タグ + 日本の主要な車両規制標識点。正規化はロード時） ──
 async function fetchOsmRegulations(bbox, fetchText) {
   const [west, south, east, north] = bbox;
   const bb = `(${south},${west},${north},${east})`;
-  const q = `[out:json][timeout:25];(way["maxheight"]${bb};way["maxwidth"]${bb};way["maxweight"]${bb};way["maxlength"]${bb};way["oneway"="yes"]${bb};);out geom;`;
+  const q = `[out:json][timeout:25];(
+way[~"^(access|vehicle|motor_vehicle|motorcar|truck|hgv|goods|hazmat.*|oneway.*|maxheight.*|maxwidth.*|maxweight.*|maxweightrating.*|maxaxleload.*|maxlength.*|maxspeed.*|minspeed.*|school_zone|hazard|restriction|zone:maxspeed|traffic_sign.*|toll.*|charge.*|construction|seasonal|winter_service|snowplowing|snow_chains|winter_equipment|parking.*|stopping.*|.*:conditional)$"~"."]${bb};
+way["highway"~"^(pedestrian|footway)$"]${bb};
+node["traffic_sign"~"^JP:3"]${bb};
+node["barrier"]${bb};
+node["highway"~"^(stop|give_way)$"]${bb};
+relation["type"~"^restriction"]${bb};
+);out meta geom;`;
   const body = await fetchText('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(q));
   if (!body) return [];
   let data = null;
   try { data = JSON.parse(body); } catch { return []; }
   const feats = [];
+  const memberLineGeometry = (member) => {
+    const coordinates = (member?.geometry || [])
+      .map((point) => [Number(point.lon), Number(point.lat)])
+      .filter((point) => point.every(Number.isFinite));
+    return coordinates.length >= 2 ? { type: 'LineString', coordinates } : null;
+  };
   for (const el of data?.elements || []) {
-    if (el.type !== 'way' || !Array.isArray(el.geometry) || el.geometry.length < 2) continue;
-    feats.push({
-      type: 'Feature',
-      properties: { id: `osm-w${el.id}`, tags: el.tags || {}, source: 'OSM' },
-      geometry: { type: 'LineString', coordinates: el.geometry.map((g) => [g.lon, g.lat]) }
-    });
+    if (el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2) {
+      feats.push({
+        type: 'Feature',
+        properties: { id: `osm-w${el.id}`, tags: el.tags || {}, source: 'OSM', updatedAt: el.timestamp || null, osmVersion: el.version ?? null },
+        geometry: { type: 'LineString', coordinates: el.geometry.map((g) => [g.lon, g.lat]) }
+      });
+    } else if (el.type === 'node' && Number.isFinite(el.lon) && Number.isFinite(el.lat)) {
+      feats.push({
+        type: 'Feature',
+        properties: { id: `osm-n${el.id}`, tags: el.tags || {}, source: 'OSM', updatedAt: el.timestamp || null, osmVersion: el.version ?? null },
+        geometry: { type: 'Point', coordinates: [el.lon, el.lat] }
+      });
+    } else if (el.type === 'relation' && String(el.tags?.type || '').startsWith('restriction')) {
+      const fromMember = (el.members || []).find((member) => member.role === 'from');
+      const toMember = (el.members || []).find((member) => member.role === 'to');
+      const viaMember = (el.members || []).find((member) => member.role === 'via');
+      const fromGeometry = memberLineGeometry(fromMember);
+      const toGeometry = memberLineGeometry(toMember);
+      let viaGeometry = memberLineGeometry(viaMember);
+      if (!viaGeometry && Number.isFinite(Number(viaMember?.lon)) && Number.isFinite(Number(viaMember?.lat))) {
+        viaGeometry = { type: 'Point', coordinates: [Number(viaMember.lon), Number(viaMember.lat)] };
+      }
+      const lines = [fromGeometry, toGeometry, viaGeometry]
+        .filter((geometry) => geometry?.type === 'LineString')
+        .map((geometry) => geometry.coordinates);
+      if (!fromGeometry || !toGeometry || !lines.length) continue;
+      feats.push({
+        type: 'Feature',
+        properties: {
+          id: `osm-r${el.id}`,
+          tags: el.tags || {},
+          source: 'OSM',
+          updatedAt: el.timestamp || null,
+          osmVersion: el.version ?? null,
+          restrictionRelation: {
+            restriction: el.tags?.['restriction:hgv'] || el.tags?.restriction || null,
+            fromWayId: fromMember?.ref != null ? String(fromMember.ref) : null,
+            toWayId: toMember?.ref != null ? String(toMember.ref) : null,
+            viaId: viaMember?.ref != null ? String(viaMember.ref) : null,
+            fromGeometry,
+            toGeometry,
+            viaGeometry
+          }
+        },
+        geometry: { type: 'MultiLineString', coordinates: lines }
+      });
+    }
   }
   return feats;
 }
@@ -402,7 +459,14 @@ async function selfcheck(mods) {
     if (url.includes('overpass-api.de') && url.includes('maxheight')) {
       return JSON.stringify({ elements: [
         { type: 'way', id: 30, tags: { maxheight: '3.3', oneway: 'yes' }, geometry: [
-          { lat: 35.6802, lon: 139.7662 }, { lat: 35.6804, lon: 139.7664 }] }
+          { lat: 35.6802, lon: 139.7662 }, { lat: 35.6804, lon: 139.7664 }] },
+        { type: 'relation', id: 31, tags: { type: 'restriction', restriction: 'no_right_turn' }, members: [
+          { type: 'way', ref: 30, role: 'from', geometry: [
+            { lat: 35.6802, lon: 139.7662 }, { lat: 35.6804, lon: 139.7664 }] },
+          { type: 'node', ref: 300, role: 'via', lat: 35.6804, lon: 139.7664 },
+          { type: 'way', ref: 32, role: 'to', geometry: [
+            { lat: 35.6804, lon: 139.7664 }, { lat: 35.6806, lon: 139.7666 }] }
+        ] }
       ] });
     }
     if (url.includes('overpass-api.de')) {
@@ -445,8 +509,9 @@ async function selfcheck(mods) {
       `r1=${r1?.properties.gsiWidthLabel} r2=${r2?.properties.gsiWidthLabel}`);
   }
   check('buildings baked + sorted', a.stats.buildings === 2 && a.world.layers.buildings[0].properties.id === 'osm-b10');
-  check('regulations baked (maxheight way)', a.stats.regulations === 1
-    && a.world.layers.regulations[0].properties.tags.maxheight === '3.3');
+  check('regulations baked (way + turn relation)', a.stats.regulations === 2
+    && a.world.layers.regulations.some((feature) => feature.properties.tags.maxheight === '3.3')
+    && a.world.layers.regulations.some((feature) => feature.properties.restrictionRelation?.restriction === 'no_right_turn'));
   // 道路縁→幅の幾何: 南北100mの中心線と±2mの平行縁 → 全幅4.0m を復元できること
   {
     const lat0 = 35.68;

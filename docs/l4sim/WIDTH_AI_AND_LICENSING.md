@@ -28,7 +28,7 @@
 
 ## 2. ライセンス問題（重要・要対応）
 
-### 2.1 Ultralytics YOLO は AGPL-3.0（商用の地雷）
+### 2.1 Ultralytics YOLO は AGPL-3.0 または Enterprise 契約が必要
 - `road_seg/train_yolo.py` / SV側のYOLO検出で使う **Ultralytics は AGPL-3.0**。
   AGPLは「ネットワーク越しに提供するだけでもソース開示義務」が発生し得る。商用SaaS/納品物に
   組み込むなら (a) Ultralytics Enterprise License を購入するか、(b) 排除する。
@@ -36,21 +36,25 @@
   （segmentation_models_pytorch = MIT, PyTorch/torchvision = BSD）で完結する。
   `road_seg/segmenter.py` にも「smp の U-Net / DeepLabV3+ (MIT) は安全」と明記済み。
 - **方針**: 商用ビルドでは幅推定を road_seg（MIT/BSD系）のみに限定し、Ultralytics 依存
-  （SV YOLO・train_yolo.py）は開発検証用として隔離を維持。`models_yolo/` の重みを
-  製品パッケージに同梱しない。
+  （SV YOLO・train_yolo.py）は開発検証用として隔離を維持。Ultralytics自身の現行説明では
+  同ツールで生成した重みも既定でAGPL対象としているため、`models_yolo/` の重みを製品へ
+  同梱しない。採用する場合はEnterprise契約の範囲を個別確認する。
 
 ### 2.2 Google Street View 由来データの保存は ToS 抵触リスク
-- Google Maps Platform の利用規約は、Street View 画像から**派生データを抽出・保存・
-  データベース化することを許可していない**（画像の表示利用が原則）。
+- Google Maps Platform の利用規約は、Google Maps Contentから別のコンテンツやデータセットを
+  作ること、許可されたID以外をキャッシュすることを原則禁止している。Street View画像から
+  道路・樹木・電柱等を抽出して判定DBに保存する製品設計は採用しない。
 - SV+YOLO で推定した幅 (width_ai) を**永続保存して判定DBに使う運用は商用では不可**と
   みなすべき。**方針**: SVスキャンはセッション内の参考表示に限定し、保存される幅ソースは
   fgd_edge / 航空写真(GSI) / 手動上書き / OSM に限定する。
   （`runRealPerceptionFusion` の自動適用は商用ビルドでは航空写真ソースへ差し替える）
 
 ### 2.3 その他のデータ源（対応は「出典表示」中心・いずれも商用可）
-- **地理院タイル/航空写真・基盤地図情報(FGD)・DEM5A**: 出典明記で商用利用可
-  （測量法上の扱いに注意。Webサイト/成果物に「出典: 国土地理院」を表示）。
-- **PLATEAU 3D Tiles**: 政府標準利用規約（CC-BY 4.0互換）。出典表示で商用可。
+- **地理院タイル/航空写真・基盤地図情報(FGD)・DEM5A**: 地理院タイルのリアルタイム読込は
+  出典明記で申請不要。加工データには加工した旨も表示する。基本測量成果の複製・配布など、
+  利用形態によって測量法上の申請が必要な場合があるため、製品の配布形態ごとに確認する。
+- **PLATEAU 3D Tiles**: 公共データ利用規約（CC BY 4.0互換等）。出典と加工表示を行えば
+  商用利用可能。ただし個別データセットの注記と測量成果の条件は別途確認する。
 - **OpenStreetMap**: **ODbL 1.0**。(1) クレジット表示必須（© OpenStreetMap contributors）、
   (2) OSMデータを他ソースと混ぜて作った「派生データベース」（例: width_ai を焼き込んだ
   道路DB）を第三者へ**再配布**する場合は ODbL での公開義務（share-alike）が発生し得る。
@@ -66,8 +70,9 @@
 本ドキュメントは法的助言ではない（製品化時に弁理士の FTO 確認を推奨）。
 
 ## 4. 実装TODO（商用ビルドまで）
-1. [ ] 商用ビルドフラグで SV由来 width_ai の永続化を無効化（表示のみ）
-2. [ ] Ultralytics 依存を requirements-yolo.txt ごと optional 隔離（既に分離済み・維持）
-3. [ ] 地図画面へ出典クレジット常設（GSI / OSM / PLATEAU）
+1. [x] 商用既定で Street View/YOLO を無効化し、派生結果の永続キャッシュも禁止
+2. [x] Ultralytics 依存を requirements-yolo.txt ごと optional 隔離
+3. [x] 地図画面へ出典クレジットを常設（GSI / OSM / PLATEAU）
 4. [ ] 道路面マスク教師データを数百枚へ拡充（ラベルサーバ運用）
 5. [ ] 道路DB納品形態を取る場合は ODbL share-alike の法務確認
+6. [ ] 製品出荷前に、採用データセットごとの利用条件一覧と弁護士・弁理士のFTO確認を完了

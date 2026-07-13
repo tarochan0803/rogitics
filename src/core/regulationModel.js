@@ -7,6 +7,21 @@ export const REGULATION_TYPES = Object.freeze({
   MAX_HEIGHT: 'max_height',
   MAX_WIDTH: 'max_width',
   MAX_WEIGHT: 'max_weight',
+  MAX_WEIGHT_RATING: 'max_weight_rating',
+  PAYLOAD_CLASS: 'payload_class_restriction',
+  MAX_AXLE_LOAD: 'max_axle_load',
+  MAX_LENGTH: 'max_length',
+  MAX_SPEED: 'max_speed',
+  MIN_SPEED: 'min_speed',
+  SCHOOL_ZONE: 'school_zone',
+  HAZMAT: 'hazmat_restriction',
+  TOLL: 'toll',
+  BARRIER: 'barrier',
+  CHAIN_REQUIRED: 'chain_required',
+  SEASONAL: 'seasonal_restriction',
+  STOP_CONTROL: 'stop_control',
+  PARKING_RESTRICTION: 'parking_restriction',
+  DATA_FRESHNESS: 'regulation_data_freshness',
   TIME_RESTRICTION: 'time_restriction',
   TURN_RESTRICTION: 'turn_restriction',
   PRIVATE_ROAD: 'private_road',
@@ -29,6 +44,7 @@ const STATUS_RANK = {
   blocked: 3,
   unknown: 1
 };
+const ISSUE_RANK = { block: 4, permit_required: 3, unknown: 2, warning: 2, info: 0 };
 
 const DEFAULT_CORRIDOR_M = 10;
 const ONEWAY_REVERSE_THRESHOLD_DEG = 105;
@@ -62,6 +78,17 @@ export function parseTonsFromValue(value) {
   const match = str.match(/([0-9]+(?:\.[0-9]+)?)\s*(t|ton|tons)?/);
   if (!match) return null;
   return finiteNumber(match[1]);
+}
+
+export function parseKmhFromValue(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const str = String(value).trim().toLowerCase();
+  if (!str || ['none', 'signals', 'variable', 'walk'].includes(str)) return null;
+  const mph = str.match(/([0-9]+(?:\.[0-9]+)?)\s*mph/);
+  if (mph) return Number(mph[1]) * 1.609344;
+  const match = str.match(/([0-9]+(?:\.[0-9]+)?)/);
+  return match ? finiteNumber(match[1]) : null;
 }
 
 function normalizeSeverity(value) {
@@ -143,20 +170,209 @@ function vehicleMetrics(vehicleConfig = {}, context = {}) {
     ?? finiteNumber(vehicleConfig.vehicleWeight)
     ?? finiteNumber(vehicleConfig.weight)
     ?? 0;
+  const ratedPayload = finiteNumber(vehicleConfig.ratedPayloadT)
+    ?? finiteNumber(vehicleConfig.payloadCapacityT)
+    ?? finiteNumber(vehicleConfig.maxPayloadT)
+    ?? 0;
+  const axleLoad = finiteNumber(context.actualMaxAxleLoadT)
+    ?? finiteNumber(vehicleConfig.maxAxleLoadT)
+    ?? 0;
+  const actualGrossWeight = finiteNumber(context.actualGrossWeightT)
+    ?? finiteNumber(context.plannedGrossWeightT)
+    ?? finiteNumber(vehicleConfig.actualGrossWeightT)
+    ?? grossWeight;
   return {
     widthM: Math.max(0, Number(envelope.vehicleWidthM) || Number(vehicleConfig.vehicleWidth) || 0),
     physicalHeightM: Math.max(0, Number(envelope.physicalHeightM) || Number(vehicleConfig.vehicleHeight) || 0),
     requiredHeightM: Math.max(0, Number(envelope.requiredHeightM) || Number(vehicleConfig.vehicleHeight) || 0),
-    grossWeightT: Math.max(0, grossWeight)
+    grossWeightT: Math.max(0, grossWeight),
+    actualGrossWeightT: Math.max(0, actualGrossWeight),
+    ratedPayloadT: Math.max(0, ratedPayload),
+    maxAxleLoadT: Math.max(0, axleLoad),
+    lengthM: Math.max(0, Number(envelope.totalLengthM) || 0),
+    isGoods: vehicleConfig.isGoodsVehicle !== false,
+    isHgv: vehicleConfig.isHgv === true || grossWeight > 3.5,
+    isHazmat: context.isHazmat === true || context.hazmat === true
+      || /hazmat|dangerous|危険物/i.test(String(context.cargoLoadType || '')),
+    snowChainsFitted: context.snowChainsFitted === true
   };
 }
 
 export function appliesToVehicle(regulation, vehicleConfig = {}, context = {}) {
   if (!regulation) return false;
   const scope = regulation.appliesTo || {};
-  if (scope.hgv === false && context.vehicleClass === 'hgv') return false;
+  const metrics = vehicleMetrics(vehicleConfig, context);
+  if (scope.hgv === true && !metrics.isHgv) return false;
+  if (scope.goods === true && !metrics.isGoods) return false;
+  if (scope.hgv === false && metrics.isHgv) return false;
+  if (scope.goods === false && metrics.isGoods) return false;
   if (scope.vehicle === false || scope.motorVehicle === false) return false;
+  const except = Array.isArray(regulation.value?.except)
+    ? regulation.value.except.map((v) => String(v).toLowerCase())
+    : String(regulation.value?.except || '').toLowerCase().split(/[;,]/).map((v) => v.trim()).filter(Boolean);
+  if (except.includes('hgv') && metrics.isHgv) return false;
+  if (except.includes('goods') && metrics.isGoods) return false;
+  if (except.includes('motor_vehicle') || except.includes('motorcar')) return false;
   return true;
+}
+
+const DAY_INDEX = Object.freeze({ Su: 0, Mo: 1, Tu: 2, We: 3, Th: 4, Fr: 5, Sa: 6 });
+
+function splitConditionalClauses(raw) {
+  const out = [];
+  let depth = 0;
+  let start = 0;
+  const text = String(raw || '');
+  for (let i = 0; i <= text.length; i++) {
+    const ch = text[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    if ((ch === ';' && depth === 0) || i === text.length) {
+      const clause = text.slice(start, i).trim();
+      const at = clause.indexOf('@');
+      if (at > 0) out.push({ value: clause.slice(0, at).trim(), condition: clause.slice(at + 1).trim() });
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+function zonedClock(dateValue, timeZone = 'Asia/Tokyo') {
+  if (dateValue == null || dateValue === '') return null;
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (!Number.isFinite(date.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date);
+    const get = (type) => parts.find((p) => p.type === type)?.value;
+    const dayText = get('weekday')?.slice(0, 2);
+    const day = DAY_INDEX[dayText];
+    const hour = Number(get('hour'));
+    const minute = Number(get('minute'));
+    return Number.isInteger(day) && Number.isFinite(hour) && Number.isFinite(minute)
+      ? { day, minuteOfDay: hour * 60 + minute }
+      : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function dayInRange(day, from, to) {
+  if (from <= to) return day >= from && day <= to;
+  return day >= from || day <= to;
+}
+
+function evaluateConditionalExpression(condition, metrics, context = {}) {
+  let rest = String(condition || '').trim().replace(/^\(+|\)+$/g, ' ');
+  if (!rest) return { state: 'unknown', reason: 'empty_condition' };
+  let active = true;
+  let recognized = false;
+
+  const metricMap = {
+    weight: metrics.actualGrossWeightT,
+    weightrating: metrics.grossWeightT,
+    payload: metrics.ratedPayloadT,
+    axleload: metrics.maxAxleLoadT,
+    length: metrics.lengthM,
+    width: metrics.widthM,
+    height: metrics.physicalHeightM
+  };
+  rest = rest.replace(/\b(weight|weightrating|payload|axleload|length|width|height)\s*(<=|>=|<|>|=)\s*([0-9]+(?:\.[0-9]+)?)/gi,
+    (all, name, op, rawLimit) => {
+      recognized = true;
+      const actual = Number(metricMap[String(name).toLowerCase()]);
+      const limit = Number(rawLimit);
+      if (!(actual > 0) || !Number.isFinite(limit)) return ' __unknown__ ';
+      if (op === '<') active = active && actual < limit;
+      else if (op === '<=') active = active && actual <= limit;
+      else if (op === '>') active = active && actual > limit;
+      else if (op === '>=') active = active && actual >= limit;
+      else active = active && Math.abs(actual - limit) < 1e-9;
+      return ' ';
+    });
+
+  const hasDay = /\b(?:Mo|Tu|We|Th|Fr|Sa|Su)(?:\s*-\s*(?:Mo|Tu|We|Th|Fr|Sa|Su))?\b/i.test(rest);
+  const hasTime = /\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/.test(rest);
+  if (hasDay || hasTime) {
+    recognized = true;
+    const clock = zonedClock(context.assessmentTime ?? context.departureTime, context.timeZone || 'Asia/Tokyo');
+    if (!clock) return { state: 'unknown', reason: 'assessment_time_required' };
+    if (hasDay) {
+      const dayMatches = [];
+      rest = rest.replace(/\b(Mo|Tu|We|Th|Fr|Sa|Su)(?:\s*-\s*(Mo|Tu|We|Th|Fr|Sa|Su))?\b/gi,
+        (all, from, to) => {
+          dayMatches.push(dayInRange(clock.day, DAY_INDEX[from.slice(0, 1).toUpperCase() + from.slice(1, 2).toLowerCase()],
+            DAY_INDEX[(to || from).slice(0, 1).toUpperCase() + (to || from).slice(1, 2).toLowerCase()]));
+          return ' ';
+        });
+      active = active && dayMatches.some(Boolean);
+    }
+    if (hasTime) {
+      const timeMatches = [];
+      rest = rest.replace(/\b(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\b/g,
+        (all, h1, m1, h2, m2) => {
+          const from = Number(h1) * 60 + Number(m1);
+          const to = Number(h2) * 60 + Number(m2);
+          const now = clock.minuteOfDay;
+          timeMatches.push(from <= to ? now >= from && now < to : now >= from || now < to);
+          return ' ';
+        });
+      active = active && timeMatches.some(Boolean);
+    }
+  }
+
+  rest = rest.replace(/\b(destination|delivery)\b/gi, (all, purpose) => {
+    recognized = true;
+    const actual = String(context.accessPurpose || '').toLowerCase();
+    if (!actual) return ' __unknown__ ';
+    active = active && (actual === String(purpose).toLowerCase() || (purpose.toLowerCase() === 'destination' && actual === 'delivery'));
+    return ' ';
+  });
+
+  if (/\b(PH|SH|school_days|wet|snow|ice)\b/i.test(rest) || rest.includes('__unknown__')) {
+    return { state: 'unknown', reason: 'unsupported_condition' };
+  }
+  rest = rest.replace(/\bAND\b|[(),]/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (rest || !recognized) return { state: 'unknown', reason: 'unsupported_condition' };
+  return { state: active ? 'active' : 'inactive', reason: null };
+}
+
+function resolveConditional(regulation, metrics, context) {
+  const raw = regulation.value?.conditionalRaw ?? regulation.value?.raw;
+  const clauses = splitConditionalClauses(raw);
+  if (!clauses.length) return { state: 'unknown', reason: 'conditional_syntax' };
+  let unknownReason = null;
+  for (const clause of clauses) {
+    const result = evaluateConditionalExpression(clause.condition, metrics, context);
+    if (result.state === 'active') return { ...result, effectiveValue: clause.value };
+    if (result.state === 'unknown') unknownReason = result.reason || 'conditional_unresolved';
+  }
+  return unknownReason ? { state: 'unknown', reason: unknownReason } : { state: 'inactive', reason: null };
+}
+
+function typedConditionalValue(type, raw) {
+  switch (type) {
+    case REGULATION_TYPES.MAX_HEIGHT:
+    case REGULATION_TYPES.MAX_WIDTH:
+    case REGULATION_TYPES.MAX_LENGTH:
+      return { meters: parseMetersFromValue(raw) };
+    case REGULATION_TYPES.MAX_WEIGHT:
+    case REGULATION_TYPES.MAX_WEIGHT_RATING:
+    case REGULATION_TYPES.MAX_AXLE_LOAD:
+      return { tons: parseTonsFromValue(raw) };
+    case REGULATION_TYPES.PAYLOAD_CLASS:
+      return { minimumT: parseTonsFromValue(raw) };
+    case REGULATION_TYPES.MAX_SPEED:
+    case REGULATION_TYPES.MIN_SPEED:
+      return { kmh: parseKmhFromValue(raw) };
+    default:
+      return {};
+  }
 }
 
 function makeIssue(regulation, severity, reasonCode, message, match = null, extra = {}) {
@@ -188,12 +404,43 @@ export function evaluateRegulation(regulation, vehicleConfig = {}, context = {})
   const m = vehicleMetrics(vehicleConfig, context);
   const match = context.match || null;
 
+  let effectiveRegulation = regulation;
   if (regulation.conditional) {
+    const resolved = resolveConditional(regulation, m, context);
+    if (resolved.state === 'inactive') return null;
+    if (resolved.state === 'active') {
+      effectiveRegulation = {
+        ...regulation,
+        conditional: false,
+        value: {
+          ...(regulation.value || {}),
+          ...typedConditionalValue(regulation.type, resolved.effectiveValue),
+          raw: resolved.effectiveValue
+        }
+      };
+    } else {
+      return makeIssue(
+        regulation,
+        REGULATION_SEVERITY.WARNING,
+        resolved.reason === 'assessment_time_required' ? 'conditional_time_required' : 'conditional_regulation_unparsed',
+        resolved.reason === 'assessment_time_required'
+          ? 'A departure time is required to evaluate this conditional regulation.'
+          : 'Conditional regulation exists and needs manual confirmation.',
+        match,
+        { conditionalRaw: regulation.value?.conditionalRaw ?? regulation.value?.raw ?? null }
+      );
+    }
+  }
+
+  regulation = effectiveRegulation;
+
+  if (regulation.value?.locationOnly && regulation.type === REGULATION_TYPES.HAZMAT && !m.isHazmat) return null;
+  if (regulation.value?.locationOnly) {
     return makeIssue(
       regulation,
       REGULATION_SEVERITY.WARNING,
-      'conditional_regulation_unparsed',
-      'Conditional regulation exists and needs manual confirmation.',
+      'traffic_sign_road_match_required',
+      'A regulation sign was found near the route, but its affected road must be confirmed.',
       match
     );
   }
@@ -214,7 +461,7 @@ export function evaluateRegulation(regulation, vehicleConfig = {}, context = {})
       if (raw === 'no') {
         return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'access_no', 'Road access is prohibited.', match);
       }
-      if (raw === 'private' || raw === 'destination' || raw === 'delivery') {
+      if (['private', 'destination', 'delivery', 'customers', 'permit', 'agricultural', 'forestry'].includes(raw)) {
         return makeIssue(
           regulation,
           permitMode ? REGULATION_SEVERITY.WARNING : REGULATION_SEVERITY.PERMIT_REQUIRED,
@@ -227,7 +474,8 @@ export function evaluateRegulation(regulation, vehicleConfig = {}, context = {})
     }
     case REGULATION_TYPES.NO_TRUCK: {
       const raw = String(regulation.value?.raw || '').toLowerCase();
-      if (raw === 'destination' || raw === 'private') {
+      if (raw === 'yes' || raw === 'designated' || raw === 'permissive') return null;
+      if (['destination', 'private', 'delivery', 'customers', 'permit', 'agricultural', 'forestry'].includes(raw)) {
         return makeIssue(
           regulation,
           permitMode ? REGULATION_SEVERITY.WARNING : REGULATION_SEVERITY.PERMIT_REQUIRED,
@@ -271,16 +519,156 @@ export function evaluateRegulation(regulation, vehicleConfig = {}, context = {})
     }
     case REGULATION_TYPES.MAX_WEIGHT: {
       const limit = finiteNumber(regulation.value?.tons);
-      if (!Number.isFinite(limit) || limit <= 0 || !m.grossWeightT) return null;
-      if (m.grossWeightT > limit) {
+      if (!Number.isFinite(limit) || limit <= 0 || !m.actualGrossWeightT) return null;
+      if (m.actualGrossWeightT > limit) {
         return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'max_weight_exceeded', 'Vehicle gross weight exceeds legal weight limit.', match, {
-          actual: Number(m.grossWeightT.toFixed(2)),
+          actual: Number(m.actualGrossWeightT.toFixed(2)),
           required: Number(limit.toFixed(2)),
-          deficit: Number((m.grossWeightT - limit).toFixed(2))
+          deficit: Number((m.actualGrossWeightT - limit).toFixed(2))
         });
       }
       return null;
     }
+    case REGULATION_TYPES.MAX_WEIGHT_RATING: {
+      const limit = finiteNumber(regulation.value?.tons) ?? parseTonsFromValue(regulation.value?.raw);
+      if (!Number.isFinite(limit) || limit <= 0 || !m.grossWeightT) return null;
+      if (m.grossWeightT > limit) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'max_weight_rating_exceeded', 'Vehicle maximum authorized mass exceeds the permitted rating.', match, {
+          actual: Number(m.grossWeightT.toFixed(2)), required: Number(limit.toFixed(2)), deficit: Number((m.grossWeightT - limit).toFixed(2))
+        });
+      }
+      return null;
+    }
+    case REGULATION_TYPES.PAYLOAD_CLASS: {
+      const threshold = finiteNumber(regulation.value?.minimumT) ?? parseTonsFromValue(regulation.value?.raw);
+      if (!Number.isFinite(threshold) || threshold <= 0) {
+        return makeIssue(regulation, REGULATION_SEVERITY.WARNING, 'payload_threshold_unknown', 'A payload-class truck restriction exists, but its threshold is unknown.', match);
+      }
+      if (!m.ratedPayloadT) {
+        return makeIssue(regulation, REGULATION_SEVERITY.UNKNOWN, 'vehicle_payload_rating_unknown', 'Vehicle rated payload is required for this restriction.', match, { required: threshold });
+      }
+      if (m.ratedPayloadT >= threshold) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'payload_class_prohibited', 'Vehicle rated payload is within the prohibited truck class.', match, {
+          actual: Number(m.ratedPayloadT.toFixed(2)), required: Number(threshold.toFixed(2)), comparison: '>='
+        });
+      }
+      return null;
+    }
+    case REGULATION_TYPES.MAX_AXLE_LOAD: {
+      const limit = finiteNumber(regulation.value?.tons) ?? parseTonsFromValue(regulation.value?.raw);
+      if (!Number.isFinite(limit) || limit <= 0) return null;
+      if (!m.maxAxleLoadT) {
+        return makeIssue(regulation, REGULATION_SEVERITY.UNKNOWN, 'vehicle_axle_load_unknown', 'Maximum axle load is required for this regulation.', match, { required: limit });
+      }
+      if (m.maxAxleLoadT > limit) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'max_axle_load_exceeded', 'Vehicle axle load exceeds the legal limit.', match, {
+          actual: Number(m.maxAxleLoadT.toFixed(2)), required: Number(limit.toFixed(2)), deficit: Number((m.maxAxleLoadT - limit).toFixed(2))
+        });
+      }
+      return null;
+    }
+    case REGULATION_TYPES.MAX_LENGTH: {
+      const limit = finiteNumber(regulation.value?.meters) ?? parseMetersFromValue(regulation.value?.raw);
+      if (!Number.isFinite(limit) || limit <= 0 || !m.lengthM) return null;
+      if (m.lengthM > limit) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'max_length_exceeded', 'Vehicle length exceeds the legal limit.', match, {
+          actual: Number(m.lengthM.toFixed(2)), required: Number(limit.toFixed(2)), deficit: Number((m.lengthM - limit).toFixed(2))
+        });
+      }
+      return null;
+    }
+    case REGULATION_TYPES.MAX_SPEED: {
+      const limit = finiteNumber(regulation.value?.kmh) ?? parseKmhFromValue(regulation.value?.raw);
+      if (!Number.isFinite(limit) || limit <= 0) return null;
+      return makeIssue(regulation, REGULATION_SEVERITY.INFO, 'speed_limit', `Speed limit is ${Math.round(limit)} km/h.`, match, { required: Number(limit.toFixed(1)) });
+    }
+    case REGULATION_TYPES.MIN_SPEED: {
+      const limit = finiteNumber(regulation.value?.kmh) ?? parseKmhFromValue(regulation.value?.raw);
+      if (!Number.isFinite(limit) || limit <= 0) return null;
+      return makeIssue(regulation, REGULATION_SEVERITY.INFO, 'minimum_speed', `Minimum speed is ${Math.round(limit)} km/h.`, match, { required: Number(limit.toFixed(1)) });
+    }
+    case REGULATION_TYPES.SCHOOL_ZONE:
+      return makeIssue(regulation, REGULATION_SEVERITY.WARNING, 'school_zone_caution', 'School zone: check signed access times and operate at reduced speed.', match, {
+        speedLimitKmh: finiteNumber(regulation.value?.kmh)
+      });
+    case REGULATION_TYPES.HAZMAT: {
+      if (!m.isHazmat) return null;
+      const requiredClass = String(regulation.value?.hazmatClass || '').toLowerCase();
+      const declaredClasses = Array.isArray(context.hazmatClasses)
+        ? context.hazmatClasses.map((value) => String(value).toLowerCase())
+        : [];
+      if (requiredClass && !declaredClasses.length) {
+        return makeIssue(regulation, REGULATION_SEVERITY.UNKNOWN, 'hazmat_class_unknown', 'Hazardous-goods class must be confirmed for this restriction.', match, {
+          hazmatClass: requiredClass
+        });
+      }
+      if (requiredClass && !declaredClasses.includes(requiredClass)) return null;
+      const raw = String(regulation.value?.raw || '').toLowerCase();
+      if (raw === 'yes' || raw === 'designated' || raw === 'permissive') return null;
+      if (['destination', 'delivery', 'private', 'permit'].includes(raw)) {
+        return makeIssue(regulation, REGULATION_SEVERITY.PERMIT_REQUIRED, 'hazmat_permission_required', 'Hazardous-goods access requires confirmation or permission.', match);
+      }
+      return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'hazmat_forbidden', 'Vehicles carrying hazardous goods are prohibited.', match);
+    }
+    case REGULATION_TYPES.TOLL:
+      return makeIssue(regulation, REGULATION_SEVERITY.INFO, 'toll_road', 'A toll or road charge applies to this route.', match, {
+        charge: regulation.value?.charge || null
+      });
+    case REGULATION_TYPES.BARRIER: {
+      const kind = String(regulation.value?.kind || regulation.value?.raw || '').toLowerCase();
+      const access = String(regulation.value?.access || '').toLowerCase();
+      const fixed = ['bollard', 'block', 'bar', 'chain', 'jersey_barrier', 'barrier_board'].includes(kind);
+      if (fixed) {
+        if (Number(match?.distanceM) > 2.5) return null;
+        if (!['yes', 'permissive', 'designated'].includes(access)) {
+          return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'fixed_barrier', 'A fixed vehicle barrier blocks the route.', match);
+        }
+        return null;
+      }
+      if (Number(match?.distanceM) > 3.5) return null;
+      if (access === 'no') return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'barrier_access_no', 'Barrier access is prohibited.', match);
+      if (['yes', 'permissive', 'designated'].includes(access)) {
+        return makeIssue(regulation, REGULATION_SEVERITY.INFO, 'controlled_barrier_accessible', 'A publicly accessible controlled barrier exists on the route.', match);
+      }
+      return makeIssue(regulation, REGULATION_SEVERITY.PERMIT_REQUIRED, 'controlled_barrier', 'A gate or controlled barrier requires access confirmation.', match);
+    }
+    case REGULATION_TYPES.CHAIN_REQUIRED:
+      if (m.snowChainsFitted) return null;
+      if (context.snowChainsFitted === false) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'snow_chains_required', 'Tire chains are required for this road.', match);
+      }
+      return makeIssue(regulation, REGULATION_SEVERITY.UNKNOWN, 'snow_chain_status_unknown', 'Confirm that tire chains are fitted before using this road.', match);
+    case REGULATION_TYPES.SEASONAL: {
+      const raw = String(regulation.value?.raw || '').toLowerCase();
+      const construction = regulation.value?.construction === true || raw.includes('construction');
+      if (construction && regulation.value?.closed !== false) {
+        return makeIssue(regulation, REGULATION_SEVERITY.BLOCK, 'road_under_construction', 'Road is closed or unavailable due to construction.', match);
+      }
+      return makeIssue(regulation, REGULATION_SEVERITY.WARNING, 'seasonal_or_winter_restriction', 'Seasonal or winter road availability must be confirmed.', match);
+    }
+    case REGULATION_TYPES.STOP_CONTROL:
+      return makeIssue(regulation, REGULATION_SEVERITY.INFO, 'mandatory_stop', 'A mandatory stop or give-way control exists on the route.', match, {
+        control: regulation.value?.control || regulation.value?.raw || null
+      });
+    case REGULATION_TYPES.PARKING_RESTRICTION: {
+      const routeTotalM = Number(context.routeTotalM);
+      const nearDestination = Number.isFinite(routeTotalM) && Number.isFinite(match?.atM)
+        && routeTotalM - match.atM <= Math.max(10, Number(context.destinationParkingRadiusM) || 30);
+      if (!nearDestination) return null;
+      const noStopping = String(regulation.value?.raw || '').toLowerCase().includes('no_stopping');
+      return makeIssue(regulation, REGULATION_SEVERITY.WARNING,
+        noStopping ? 'destination_no_stopping' : 'destination_no_parking',
+        noStopping ? 'No-stopping restriction exists near the destination.' : 'No-parking restriction exists near the destination.', match);
+    }
+    case REGULATION_TYPES.TURN_RESTRICTION:
+      if (context.turnUncertain) {
+        return makeIssue(regulation, REGULATION_SEVERITY.WARNING, 'turn_restriction_unresolved', 'Turn restriction exists but route sequence could not be matched reliably.', match);
+      }
+      if (!context.turnViolation) return null;
+      return makeIssue(regulation, permitMode ? REGULATION_SEVERITY.PERMIT_REQUIRED : REGULATION_SEVERITY.BLOCK,
+        'turn_restriction_violation', `Route violates ${regulation.value?.restriction || 'a turn restriction'}.`, match, {
+          restriction: regulation.value?.restriction || null
+        });
     case REGULATION_TYPES.TIME_RESTRICTION:
       return makeIssue(regulation, REGULATION_SEVERITY.WARNING, 'time_restriction_unparsed', 'Time-based restriction exists and needs manual confirmation.', match);
     default:
@@ -298,8 +686,18 @@ function latLngOf(point) {
 function linesFromGeometry(geometry) {
   if (!geometry) return [];
   if (geometry.type === 'Feature') return linesFromGeometry(geometry.geometry);
+  if (geometry.type === 'Point') {
+    const c = geometry.coordinates || [];
+    return c.length >= 2 ? [[c, [Number(c[0]) + 1e-9, Number(c[1])]]] : [];
+  }
+  if (geometry.type === 'MultiPoint') {
+    return (geometry.coordinates || []).filter((c) => c?.length >= 2)
+      .map((c) => [c, [Number(c[0]) + 1e-9, Number(c[1])]]);
+  }
   if (geometry.type === 'LineString') return [geometry.coordinates || []];
   if (geometry.type === 'MultiLineString') return geometry.coordinates || [];
+  if (geometry.type === 'Polygon') return geometry.coordinates || [];
+  if (geometry.type === 'MultiPolygon') return (geometry.coordinates || []).flat();
   return [];
 }
 
@@ -368,6 +766,10 @@ function angleDeltaDeg(a, b) {
   return d > 180 ? 360 - d : d;
 }
 
+function axisAngleDeltaDeg(a, b) {
+  return Math.min(angleDeltaDeg(a, b), angleDeltaDeg(a, (Number(b) + 180) % 360));
+}
+
 function routeSegments(routeLL = []) {
   const pts = routeLL.map(latLngOf).filter(Boolean);
   const out = [];
@@ -424,6 +826,43 @@ function bestRouteMatch(routeSegs, geometry, corridorM) {
   return best;
 }
 
+function matchTurnRestriction(routeSegs, regulation, corridorM) {
+  const relation = regulation?.value?.relation;
+  if (!relation) {
+    const match = bestRouteMatch(routeSegs, regulation?.geometry, corridorM);
+    return match ? { match, turnViolation: false, turnUncertain: true } : null;
+  }
+  const viaGeometry = relation.viaGeometry || null;
+  const fromGeometry = relation.fromGeometry || null;
+  const toGeometry = relation.toGeometry || null;
+  if (!viaGeometry || !fromGeometry || !toGeometry) {
+    const match = bestRouteMatch(routeSegs, regulation?.geometry, corridorM);
+    return match ? { match, turnViolation: false, turnUncertain: true } : null;
+  }
+  const viaMatch = bestRouteMatch(routeSegs, viaGeometry, Math.min(corridorM, 7));
+  if (!viaMatch) return null;
+  const station = viaMatch.atM;
+  const windowM = 55;
+  const approach = routeSegs.filter((seg) => seg.cum < station - 0.5 && seg.cum + seg.len >= station - windowM);
+  const departure = routeSegs.filter((seg) => seg.cum + seg.len > station + 0.5 && seg.cum <= station + windowM);
+  let fromMatch = bestRouteMatch(approach, fromGeometry, Math.min(corridorM, 9));
+  if (fromMatch && axisAngleDeltaDeg(fromMatch.routeBearing, fromMatch.featureBearing) > 48) fromMatch = null;
+  if (!fromMatch || fromMatch.atM > station + 4) return null;
+  let toMatch = bestRouteMatch(departure, toGeometry, Math.min(corridorM, 9));
+  if (toMatch && axisAngleDeltaDeg(toMatch.routeBearing, toMatch.featureBearing) > 48) toMatch = null;
+  const kind = String(regulation.value?.restriction || relation.restriction || '').toLowerCase();
+  if (!kind.startsWith('no_') && !kind.startsWith('only_')) {
+    return { match: viaMatch, turnViolation: false, turnUncertain: true };
+  }
+  const continuesPastVia = routeSegs.some((seg) => seg.cum + seg.len > station + 2);
+  if (!continuesPastVia) return null;
+  return {
+    match: viaMatch,
+    turnViolation: kind.startsWith('no_') ? !!toMatch : !toMatch,
+    turnUncertain: false
+  };
+}
+
 function isOnewayDirectionViolation(regulation, match) {
   if (!match || !Number.isFinite(match.routeBearing) || !Number.isFinite(match.featureBearing)) return false;
   const allowedBearing = regulation.direction === 'reverse'
@@ -461,6 +900,9 @@ export function assessRegulationsForRoute({
 } = {}) {
   const normalized = regulations.map(normalizeRegulation).filter(Boolean);
   const routeSegs = routeSegments(routeLL);
+  const routeTotalM = routeSegs.length
+    ? routeSegs[routeSegs.length - 1].cum + routeSegs[routeSegs.length - 1].len
+    : 0;
   const corridorM = Number.isFinite(Number(options.corridorM))
     ? Math.max(1, Number(options.corridorM))
     : DEFAULT_CORRIDOR_M;
@@ -468,7 +910,12 @@ export function assessRegulationsForRoute({
   let matchedRegulationCount = 0;
 
   for (const regulation of normalized) {
-    const match = bestRouteMatch(routeSegs, regulation.geometry, corridorM);
+    const turnMatch = regulation.type === REGULATION_TYPES.TURN_RESTRICTION
+      ? matchTurnRestriction(routeSegs, regulation, corridorM)
+      : null;
+    const match = regulation.type === REGULATION_TYPES.TURN_RESTRICTION
+      ? turnMatch?.match
+      : bestRouteMatch(routeSegs, regulation.geometry, corridorM);
     if (!match) continue;
     matchedRegulationCount++;
     const directionViolation = regulation.type === REGULATION_TYPES.ONEWAY
@@ -477,10 +924,47 @@ export function assessRegulationsForRoute({
     const issue = evaluateRegulation(regulation, vehicleConfig, {
       ...options,
       match,
-      directionViolation
+      routeTotalM,
+      directionViolation,
+      turnViolation: !!turnMatch?.turnViolation,
+      turnUncertain: regulation.type === REGULATION_TYPES.TURN_RESTRICTION
+        ? (turnMatch?.turnUncertain ?? true)
+        : false
     });
     if (issue) issues.push(issue);
   }
+
+  const freshness = options.dataFreshness || options.regulationFreshness || null;
+  const freshnessState = String(freshness?.overall || '').toLowerCase();
+  if (freshnessState === 'stale' || freshnessState === 'expired' || freshnessState === 'error') {
+    const unavailable = freshnessState === 'expired' || freshnessState === 'error';
+    const freshnessRegulation = normalizeRegulation({
+      id: `system:regulation-freshness:${freshnessState}`,
+      type: REGULATION_TYPES.DATA_FRESHNESS,
+      source: 'system',
+      authority: 'LOGISTICS_OS',
+      confidence: 1,
+      severity: unavailable ? REGULATION_SEVERITY.UNKNOWN : REGULATION_SEVERITY.WARNING,
+      value: { raw: freshnessState, sources: freshness.sources || null },
+      evidence: { tag: 'source_freshness', rawValue: freshnessState }
+    });
+    issues.push(makeIssue(
+      freshnessRegulation,
+      unavailable ? REGULATION_SEVERITY.UNKNOWN : REGULATION_SEVERITY.WARNING,
+      unavailable ? 'regulation_data_unavailable' : 'official_regulation_data_incomplete',
+      unavailable
+        ? '道路規制データが期限切れまたは取得不能です。通行可否の確認が必要です。'
+        : 'OSMは更新済みですが、公的な月次・リアルタイム規制データが未設定または要確認です。'
+    ));
+  }
+
+  issues.sort((a, b) => {
+    const severity = (ISSUE_RANK[b?.severity] || 0) - (ISSUE_RANK[a?.severity] || 0);
+    if (severity) return severity;
+    const atA = Number.isFinite(a?.atM) ? a.atM : Infinity;
+    const atB = Number.isFinite(b?.atM) ? b.atM : Infinity;
+    return atA - atB;
+  });
 
   const summary = deriveRegulationStatus(issues);
   return {

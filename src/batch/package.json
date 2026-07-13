@@ -17,6 +17,7 @@
     "index3d:smoke:phase5": "node run_index3d_smoke.js --demo",
     "index3d:smoke:phase7": "node run_index3d_smoke.js --demo",
     "index3d:smoke:phase7-playback": "node run_index3d_smoke.js --phase7-playback",
+    "regulation:detail": "node run_regulation_detail_check.js",
     "test": "npm run golden:dry"
   },
   "keywords": [],

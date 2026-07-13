@@ -3,7 +3,7 @@ import { buildIntersectionWidening } from '../../core/intersectionWidening.js';
 import { getRouteTrackingTurnRadius } from '../../config.js';
 import { projectToNearestWay } from '../../core/graph.js';
 import { fuseWidthForFeature } from '../../core/roadWidthModel.js';
-import { getRiskTuning, autonomousSpeedFactor, curveSpeedLimitMS, narrowWidthSpeedFactor, roadGradeSpeedFactor } from '../../core/vehicleRiskModel.js';
+import { getRiskTuning, autonomousSpeedFactor, curveSpeedLimitMS, narrowWidthSpeedFactor, roadGradeSpeedFactor, effectiveBrakeDecelMSS } from '../../core/vehicleRiskModel.js';
 import { normA, turf } from '../../utils/geo.js';
 
 const DEFAULT_SENSOR_RANGE_M = 34;
@@ -126,6 +126,7 @@ function mergeMaskEdits(maskEdits = {}, extraMaskDeny = []) {
 function solidBlocksVehicle(solid, envelope) {
   if (!solid?.feature?.geometry) return false;
   if (solid.role === 'overhead') {
+    if (solid.clearanceReliable === false) return false;
     const h = Number(solid.heightM);
     return Number.isFinite(h) ? h < envelope.requiredHeightM : true;
   }
@@ -141,6 +142,8 @@ function buildBlockers({ buildings, maskEdits, envelope }) {
       role: solid.role,
       label: solid.label,
       heightM: Number.isFinite(Number(solid.heightM)) ? Number(solid.heightM) : null,
+      heightSource: solid.heightSource || null,
+      clearanceReliable: solid.clearanceReliable !== false,
       feature: solid.feature
     }));
 }
@@ -368,11 +371,32 @@ export function buildAutonomyDriveReport({
   }
 
   const footprint = getVehicleFootprintConfig(vehicleConfig);
+  const vehicleLength = Math.max(4, footprint.totalLengthM);
   // 交差点隅切りキャップ: 道路面(roadUnion)には既に足し込まれているが、幅ゲートは
   // 道路スカラー幅しか見ておらず「面では通れる旋回」をSTOP/K-turn推奨していた（教師
   // データFN分析で判明）。キャップ圏内のサンプルは、道路面と同じ円キャップの断面幅
   // （ノード距離dに対する 2*sqrt(r^2-d^2)）で静的な収まりだけを評価する。
   const wideningNodes = (buildIntersectionWidening(route, vehicleConfig)?.nodes) || [];
+  const intersectionContextAt = (lat, lng) => {
+    let best = null;
+    for (const n of wideningNodes) {
+      const radiusM = Number(n.radiusM) || 0;
+      if (!(radiusM > 0)) continue;
+      const dlat = (lat - n.lat) * 111320;
+      const dlng = (lng - n.lng) * 111320 * Math.cos(lat * Math.PI / 180);
+      const d = Math.hypot(dlat, dlng);
+      const relaxRadiusM = radiusM + vehicleLength * 0.45;
+      if (d > relaxRadiusM) continue;
+      if (!best || d < best.distanceM) {
+        best = {
+          radiusM,
+          distanceM: d,
+          deflectionDeg: Number(n.deflectionDeg) || null
+        };
+      }
+    }
+    return best;
+  };
   const capWidthAt = (lat, lng, baseWidthM) => {
     const base = Number(baseWidthM);
     let width = Number.isFinite(base) ? base : null;
@@ -389,7 +413,6 @@ export function buildAutonomyDriveReport({
     }
     return width;
   };
-  const vehicleLength = Math.max(4, footprint.totalLengthM);
   const vehicleMinTurnRadiusM = Math.max(0, Number(getRouteTrackingTurnRadius(vehicleConfig)) || 0);
   const maxSteerDeg = Math.max(12, Number(vehicleConfig?.maxSteeringAngle) || 38);
   const safeStopM = Math.max(5, vehicleLength * 0.72 + DEFAULT_REACTION_MARGIN_M);
@@ -421,17 +444,34 @@ export function buildAutonomyDriveReport({
     // ワールドコンパイラ焼き込みの勾配（demGradeMedianPct/MaxPct）→ 減速係数。
     // 勾配情報の無い道路（オンライン取得等）は 1.0 で従来挙動のまま。
     const grade = nearestRoad?.feature ? roadGradeSpeedFactor(nearestRoad.feature) : { factor: 1, gradePct: null };
+    // 縦方向動力学: 停止距離計算を physics.js と同じ真実源（effectiveBrakeDecelMSS）へ統一する。
+    // コンパイル済みワールドの demGradeMedianPct は絶対値（進行方向の上り/下り情報を持たない）で
+    // 焼き込まれるため、制動側は最悪ケース＝下り(負符号)として渡し、停止距離を保守的に見積もる。
+    // 勾配情報の無い道路（オンライン取得等）は 0=平坦。路面は vehicleConfig.surfaceCondition。
+    const brakeDecelMSS = effectiveBrakeDecelMSS({
+      gradePct: grade.gradePct != null ? -Math.abs(grade.gradePct) : 0,
+      vehicleConfig
+    });
     const headingDeg = bearingAt(line, s, totalM);
     const lookAheadM = Math.max(7, vehicleLength);
     const turnRad = turnAngleAhead(line, s, totalM, lookAheadM);
     const absTurnRad = Math.abs(turnRad);
     const turnDeg = Math.abs(turnRad * 180 / Math.PI);
-    const steeringRatio = clamp(turnDeg / Math.max(8, maxSteerDeg * 0.75), 0, 1.35);
     const pathRadiusM = absTurnRad > 1e-3 ? lookAheadM / absTurnRad : Infinity;
+    const intersectionCtx = intersectionContextAt(coords[1], coords[0]);
+    const effectivePathRadiusM = intersectionCtx && Number.isFinite(pathRadiusM)
+      ? Math.max(
+        pathRadiusM,
+        vehicleMinTurnRadiusM || 0,
+        Number(intersectionCtx.radiusM) || 0
+      )
+      : pathRadiusM;
+    const steeringRatioRaw = clamp(turnDeg / Math.max(8, maxSteerDeg * 0.75), 0, 1.35);
+    const steeringRatio = intersectionCtx ? Math.min(steeringRatioRaw, 0.88) : steeringRatioRaw;
     const turnRadiusDeficitM = Number.isFinite(pathRadiusM) && vehicleMinTurnRadiusM > 0
-      ? Math.max(0, vehicleMinTurnRadiusM - pathRadiusM)
+      ? Math.max(0, vehicleMinTurnRadiusM - effectivePathRadiusM)
       : 0;
-    const curveLimitMS = curveSpeedLimitMS({ turnRadiusM: pathRadiusM, baseSpeedMS: cruiseMS });
+    const curveLimitMS = curveSpeedLimitMS({ turnRadiusM: effectivePathRadiusM, baseSpeedMS: cruiseMS });
     // 狭幅ゲート（曲率連動）: カーブでは車体が旋回スイング（外輪差・オーバーハングの
     // 振り出し）ぶん道路幅を余計に使う。swing ≈ Lf²/(2R)（Lf=ホイールベース+前オーバーハング）
     // を RISK_TUNING の係数で実効車幅へ加算し、有効幅との余裕で 徐行/進入不可(STOP) に落とす。
@@ -461,8 +501,8 @@ export function buildAutonomyDriveReport({
     );
     const curveSwingWidthMultiplier = curveSwingWidthMultiplierMin
       + (curveSwingWidthMultiplierMax - curveSwingWidthMultiplierMin) * swingVehicleT;
-    const curveSwingM = Number.isFinite(pathRadiusM) && pathRadiusM > 0.5
-      ? Math.min(curveSwingMaxM, (swingLenM * swingLenM) / (2 * pathRadiusM))
+    const curveSwingM = Number.isFinite(effectivePathRadiusM) && effectivePathRadiusM > 0.5
+      ? Math.min(curveSwingMaxM, (swingLenM * swingLenM) / (2 * effectivePathRadiusM))
       : 0;
     const effVehicleWidthM = footprint.vehicleWidth + curveSwingWidthMultiplier * curveSwingM;
     const widthWithCapM = capWidthAt(coords[1], coords[0], fusedWidth?.value);
@@ -517,9 +557,10 @@ export function buildAutonomyDriveReport({
     let obstacleLimitMS = cruiseMS;
     if (firstBlock) {
       const stopClearanceM = Number(firstBlock.distanceM) - safeStopM;
+      // decelMSS 引数（後方互換で受ける）ではなく、勾配・路面連動の brakeDecelMSS で停止距離を評価。
       obstacleLimitMS = stopClearanceM <= 0
         ? 0
-        : Math.min(cruiseMS, Math.sqrt(Math.max(0, 2 * decelMSS * stopClearanceM)));
+        : Math.min(cruiseMS, Math.sqrt(Math.max(0, 2 * brakeDecelMSS * stopClearanceM)));
     }
 
     const classified = classifySample({
@@ -547,6 +588,7 @@ export function buildAutonomyDriveReport({
       confidenceSpeedFactor: round(confidenceFactor, 3),
       gradePct: grade.gradePct != null ? round(grade.gradePct, 2) : null,
       gradeSpeedFactor: round(grade.factor, 3),
+      brakeDecelMSS: round(brakeDecelMSS, 2),
       widthMarginM: narrow.marginM != null ? round(narrow.marginM, 2) : null,
       staticWidthMarginM: narrow.staticMarginM != null ? round(narrow.staticMarginM, 2) : null,
       // 切り返し推奨: スイング超過（=そのまま曲がると帯を割る）かつ急な折れ。
@@ -563,10 +605,15 @@ export function buildAutonomyDriveReport({
       blockerHeightM: firstBlock?.blockerHeightM ?? null,
       turnDeg: round(turnDeg, 1),
       pathRadiusM: Number.isFinite(pathRadiusM) ? round(pathRadiusM, 1) : null,
+      effectivePathRadiusM: Number.isFinite(effectivePathRadiusM) ? round(effectivePathRadiusM, 1) : null,
       vehicleMinTurnRadiusM: vehicleMinTurnRadiusM > 0 ? round(vehicleMinTurnRadiusM, 1) : null,
       turnRadiusDeficitM: round(turnRadiusDeficitM, 2),
       curveLimitKmh: round(curveLimitMS * 3.6, 1),
-      steeringRatio: round(steeringRatio, 3)
+      steeringRatio: round(steeringRatio, 3),
+      steeringRatioRaw: round(steeringRatioRaw, 3),
+      intersectionRelaxed: !!intersectionCtx,
+      intersectionCapRadiusM: intersectionCtx ? round(intersectionCtx.radiusM, 2) : null,
+      intersectionCapDistanceM: intersectionCtx ? round(intersectionCtx.distanceM, 2) : null
     });
   }
 

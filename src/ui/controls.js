@@ -1819,9 +1819,30 @@ function getEffectiveWidthMargin(vehicleConfig, strict = getStrictRoadSettings()
 }
 
 function getRoutePolicySettings() {
-  if (typeof document === 'undefined') return { permitShortest: false };
+  if (typeof document === 'undefined') return {
+    permitShortest: false, assessmentTime: null, timeZone: 'Asia/Tokyo', isHazmat: false, snowChainsFitted: false,
+    dataFreshness: null
+  };
   const permitShortest = !!document.getElementById('permitShortestRoute')?.checked;
-  return { permitShortest };
+  const timeInput = document.getElementById('regulationAssessmentTime');
+  if (timeInput && !timeInput.value) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date());
+    const get = (type) => parts.find((p) => p.type === type)?.value || '';
+    timeInput.value = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
+  }
+  const local = String(timeInput?.value || '').trim();
+  const assessmentTime = local ? `${local.length === 16 ? `${local}:00` : local}+09:00` : null;
+  return {
+    permitShortest,
+    assessmentTime,
+    timeZone: 'Asia/Tokyo',
+    isHazmat: !!document.getElementById('index3dHazmat')?.checked,
+    snowChainsFitted: !!document.getElementById('index3dSnowChains')?.checked,
+    dataFreshness: window.regulationFreshness?.getStatus?.() || null
+  };
 }
 
 function renderRoutePolicyControls() {
@@ -2142,6 +2163,7 @@ async function reassessWithYoloEvidence({
   const state = store.getState();
   if (!state.simRoute || state.simRoute.length < 2) return null;
   const widthMargin = getEffectiveWidthMargin(state.vehicleConfig, strictSettings);
+  const regulationPolicy = getRoutePolicySettings();
 
   return await runDeliveryAssessment({
     simRoute: state.simRoute,
@@ -2159,7 +2181,12 @@ async function reassessWithYoloEvidence({
     clearanceMargin: strictSettings.clearanceMargin,
     coverageThreshold: strictSettings.coverageThreshold,
     strictWidthMode: strictSettings.strictMode,
-    permitMode: getRoutePolicySettings().permitShortest,
+    permitMode: regulationPolicy.permitShortest,
+    assessmentTime: regulationPolicy.assessmentTime,
+    regulationTimeZone: regulationPolicy.timeZone,
+    isHazmat: regulationPolicy.isHazmat,
+    snowChainsFitted: regulationPolicy.snowChainsFitted,
+    regulationDataFreshness: regulationPolicy.dataFreshness,
     externalRegulations: getActiveExternalRegulations(),
     allowRouteAdjustment: false,
     maxAdjustIterations: ROUTE_ADJUSTMENT_MAX_ITERATIONS
@@ -2586,6 +2613,7 @@ function evaluateRouteCandidate(routeLL, state, { label = 'route' } = {}) {
     + turnDeficit * 900
     + (Number.isFinite(minAllowed) ? Math.max(0, 12 - minAllowed) * 120 : 0);
   let regulationAssessment = null;
+  const regulationPolicy = getRoutePolicySettings();
   try {
     regulationAssessment = assessRegulationsForRoute({
       routeLL: plan.trajectoryRoute,
@@ -2595,7 +2623,12 @@ function evaluateRouteCandidate(routeLL, state, { label = 'route' } = {}) {
       ),
       vehicleConfig: state.vehicleConfig || {},
       options: {
-        permitMode: getRoutePolicySettings().permitShortest,
+        permitMode: regulationPolicy.permitShortest,
+        assessmentTime: regulationPolicy.assessmentTime,
+        timeZone: regulationPolicy.timeZone,
+        isHazmat: regulationPolicy.isHazmat,
+        snowChainsFitted: regulationPolicy.snowChainsFitted,
+        dataFreshness: regulationPolicy.dataFreshness,
         cargoLoadType: state.cargoLoadType,
         cargoCount: state.cargoCount,
         clearanceMargin: strict.clearanceMargin
@@ -2643,6 +2676,7 @@ async function runSingleVehicleAssessment(presetName) {
   const strict = getStrictRoadSettings();
   const vehicleConfig = { ...buildVehicleConfig(presetName), driverSkill: state.driverSkill };
   const widthMargin = getEffectiveWidthMargin(vehicleConfig, strict);
+  const regulationPolicy = getRoutePolicySettings();
 
   const result = await runDeliveryAssessment({
     simRoute: state.simRoute,
@@ -2660,7 +2694,12 @@ async function runSingleVehicleAssessment(presetName) {
     clearanceMargin: strict.clearanceMargin,
     coverageThreshold: strict.coverageThreshold,
     strictWidthMode: strict.strictMode,
-    permitMode: getRoutePolicySettings().permitShortest,
+    permitMode: regulationPolicy.permitShortest,
+    assessmentTime: regulationPolicy.assessmentTime,
+    regulationTimeZone: regulationPolicy.timeZone,
+    isHazmat: regulationPolicy.isHazmat,
+    snowChainsFitted: regulationPolicy.snowChainsFitted,
+    regulationDataFreshness: regulationPolicy.dataFreshness,
     externalRegulations: getActiveExternalRegulations(),
     allowRouteAdjustment: false,
     maxAdjustIterations: ROUTE_ADJUSTMENT_MAX_ITERATIONS
@@ -3297,6 +3336,9 @@ export function initControls() {
   document.getElementById('strictWidthExtra')?.addEventListener('input', renderStrictWidthControls);
   renderStrictWidthControls();
   document.getElementById('permitShortestRoute')?.addEventListener('change', handleRoutePolicyChange);
+  document.getElementById('regulationAssessmentTime')?.addEventListener('change', handleRoutePolicyChange);
+  document.getElementById('index3dHazmat')?.addEventListener('change', handleRoutePolicyChange);
+  document.getElementById('index3dSnowChains')?.addEventListener('change', handleRoutePolicyChange);
   renderRoutePolicyControls();
 
   const svStatusEl = document.getElementById('svStatus');
@@ -3536,6 +3578,7 @@ export function initControls() {
         stepLabel++;
 
         const state = store.getState();
+        const regulationPolicy = getRoutePolicySettings();
         let result = await runDeliveryAssessment({
           simRoute: state.simRoute,
           vehicleConfig: state.vehicleConfig,
@@ -3552,7 +3595,12 @@ export function initControls() {
           clearanceMargin: strict.clearanceMargin,
           coverageThreshold: strict.coverageThreshold,
           strictWidthMode: strict.strictMode,
-          permitMode: getRoutePolicySettings().permitShortest,
+          permitMode: regulationPolicy.permitShortest,
+          assessmentTime: regulationPolicy.assessmentTime,
+          regulationTimeZone: regulationPolicy.timeZone,
+          isHazmat: regulationPolicy.isHazmat,
+          snowChainsFitted: regulationPolicy.snowChainsFitted,
+          regulationDataFreshness: regulationPolicy.dataFreshness,
           externalRegulations: getActiveExternalRegulations(),
           allowRouteAdjustment: false,
           maxAdjustIterations: ROUTE_ADJUSTMENT_MAX_ITERATIONS
@@ -4464,6 +4512,8 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
     const vWidth = Number(vc.vehicleWidth) || 0;
     const vHeight = Number(vc.vehicleHeight) || 0;
     const vWeight = Number(vc.grossWeight) || 0;
+    const vPayload = Number(vc.ratedPayloadT) || 0;
+    const vLength = Math.max(0, Number(vc.wheelBase) + Number(vc.frontOverhang) + Number(vc.rearOverhang)) || 0;
     const vRmin = getRouteTrackingTurnRadius(vc);
     const turnCostBase = Math.max(0, (vRmin - 5.5) * 0.06);
     const minRoadWidthStrict = Math.max(0, vWidth + widthMargin + (strict.strictMode ? strict.extraMargin : 0));
@@ -4477,6 +4527,10 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
         vehicleWidth: vWidth,
         vehicleHeight: vHeight,
         vehicleWeight: vWeight,
+        vehiclePayloadRating: vPayload,
+        vehicleLength: vLength,
+        isHazmat: routePolicy.isHazmat,
+        snowChainsFitted: routePolicy.snowChainsFitted,
         minRoadWidth: minRoadWidthStrict,
         narrowPenaltyFactor: 3.0
       }
@@ -4490,6 +4544,10 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
         vehicleWidth: vWidth,
         vehicleHeight: vHeight,
         vehicleWeight: vWeight,
+        vehiclePayloadRating: vPayload,
+        vehicleLength: vLength,
+        isHazmat: routePolicy.isHazmat,
+        snowChainsFitted: routePolicy.snowChainsFitted,
         minRoadWidth: Math.max(0, vWidth + Math.max(0.05, widthMargin * 0.35)),
         narrowPenaltyFactor: 1.6
       }
@@ -4519,6 +4577,10 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
           vehicleWidth: vWidth,
           vehicleHeight: vHeight,
           vehicleWeight: vWeight,
+          vehiclePayloadRating: vPayload,
+          vehicleLength: vLength,
+          isHazmat: routePolicy.isHazmat,
+          snowChainsFitted: routePolicy.snowChainsFitted,
           minRoadWidth: Math.max(0, vWidth + Math.max(0.05, widthMargin * 0.25)),
           narrowPenaltyFactor: 1.2
         }
@@ -4559,6 +4621,8 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
       const vWidth = Number(vc.vehicleWidth) || 0;
       const vHeight = Number(vc.vehicleHeight) || 0;
       const vWeight = Number(vc.grossWeight) || 0;
+      const vPayload = Number(vc.ratedPayloadT) || 0;
+      const vLength = Math.max(0, Number(vc.wheelBase) + Number(vc.frontOverhang) + Number(vc.rearOverhang)) || 0;
       const fallbackGraph = fullRoadRoute(pts, {
         forbidUTurn: false,
         turnCostK: 0,
@@ -4568,6 +4632,10 @@ async function computeRouteFromEndpoints(state, { silent = false, prefer = 'osrm
           vehicleWidth: vWidth,
           vehicleHeight: vHeight,
           vehicleWeight: vWeight,
+          vehiclePayloadRating: vPayload,
+          vehicleLength: vLength,
+          isHazmat: routePolicy.isHazmat,
+          snowChainsFitted: routePolicy.snowChainsFitted,
           minRoadWidth: Math.max(0, vWidth + Math.max(0.05, widthMargin * 0.35)),
           narrowPenaltyFactor: 1.2
         }

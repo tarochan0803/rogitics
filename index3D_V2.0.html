@@ -201,6 +201,19 @@
           <input id="permitShortestRoute" type="checkbox" />
           <span>一方通行を許可して最短経路を使う</span>
         </label>
+        <label class="field">
+          <span>規制判定日時（日本時間）</span>
+          <input id="regulationAssessmentTime" class="ctrl-input" type="datetime-local" />
+        </label>
+        <div class="regulation-freshness" data-regulation-freshness data-state="error" aria-live="polite">
+          <div class="regulation-freshness-main">
+            <span class="regulation-freshness-label">規制データ</span>
+            <strong data-freshness-status>未確認</strong>
+            <button class="icon-btn" type="button" data-freshness-refresh aria-label="規制データを更新" title="規制データを更新"></button>
+          </div>
+          <div class="regulation-freshness-detail" data-freshness-detail>OSM 未取得 / NPA 未取得</div>
+          <span class="regulation-freshness-review" data-freshness-review hidden></span>
+        </div>
         <div id="routePolicyStatus" class="sub-status">経路方針: 一方通行を守る</div>
         <div id="status-message" class="sub-status">道路読込、地点追加、経路確定の順に進めてください。</div>
         <div id="advancedMeta" class="sub-status">地点: 0 / 経路: 未確定</div>
@@ -424,6 +437,14 @@
             </select>
           </label>
         </div>
+        <label class="check-row">
+          <input id="index3dHazmat" type="checkbox" />
+          <span>危険物積載車両</span>
+        </label>
+        <label class="check-row">
+          <input id="index3dSnowChains" type="checkbox" />
+          <span>タイヤチェーン装着済み</span>
+        </label>
         <div class="button-grid">
           <button id="index3dRun" class="ctrl-btn primary" type="button">実行</button>
           <button id="index3dPause" class="ctrl-btn ghost" type="button">一時停止</button>
@@ -531,6 +552,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
   <script src="https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.0/dist/Leaflet.GoogleMutant.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
   <!-- THREEをES modulesで読み込み、既存コード向けにwindow.THREEへ公開する。 -->
   <script type="module">
     import * as THREEMod from 'three';
@@ -554,6 +576,7 @@
     })();
   </script>
   <script type="module" src="./src/index3dMain.js"></script>
+  <script type="module" src="./src/core/regulationFreshness.js"></script>
 </body>
 
 </html>

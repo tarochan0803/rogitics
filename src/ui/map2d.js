@@ -3,6 +3,19 @@ import { store } from '../state.js';
 import { fetchRoadsAndSidewalks } from '../api/overpass.js';
 import { RUNTIME_CONFIG } from '../config.js';
 import { resolvePlateauBuildingTilesetForBounds } from '../api/plateauCatalog.js';
+import { buildOsmRegulationLayer } from '../core/osmRegulationAdapter.js';
+import {
+  getActiveExternalRegulations,
+  mergeRegulationLayers,
+  setActiveExternalRegulations
+} from '../core/jarticRegulationAdapter.js';
+
+function applyFetchedRegulations(regulations, { merge = false } = {}) {
+  const layer = buildOsmRegulationLayer(regulations?.features || []);
+  return setActiveExternalRegulations(merge
+    ? mergeRegulationLayers(getActiveExternalRegulations(), layer)
+    : layer);
+}
 
 function getPlateauUrlFromUi() {
   return String(
@@ -104,6 +117,7 @@ let activeObstaclePolygonDrawer = null;
 let waypointInsertMode = false;
 let obstacleRadiusMeters = 1.5;
 let obstacleHeightMeters = 3.0;
+let regulationRefreshReloadInFlight = false;
 
 const layers = {};
 const LAYER_NAMES = ['buildings', 'roads', 'sidewalks', 'endpoints', 'route', 'sweep', 'feasibility', 'obstacles', 'search', 'roadWidths', 'regulations'];
@@ -258,6 +272,9 @@ export function initMap2D(containerId = 'map') {
 
   map.setView([35.68, 139.76], 14);
   setupGoogleTiles();
+  map.attributionControl?.addAttribution(
+    '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">&copy; OpenStreetMap contributors</a>'
+  );
   LAYER_NAMES.forEach(name => ensureLayer(name));
   map.on('click', onMapClick);
   map.on('draw:created', onDrawCreated);
@@ -269,7 +286,33 @@ export function initMap2D(containerId = 'map') {
   initWidthEditor(map, store);
   setupZoomRerender();
   window._leafletMap = map;
+  window.addEventListener('regulation-data-refreshed', async (event) => {
+    if (!event?.detail?.force || regulationRefreshReloadInFlight) return;
+    regulationRefreshReloadInFlight = true;
+    try {
+      await loadRoadsForView();
+      toast('最新の規制データで道路を更新しました');
+    } catch (error) {
+      toast(`規制更新後の道路再読込に失敗: ${error?.message || error}`);
+    } finally {
+      regulationRefreshReloadInFlight = false;
+    }
+  });
   console.log('[map2d] Leaflet map initialized');
+}
+
+function publishRegulationBounds(bounds) {
+  if (!bounds) return;
+  const bbox = [bounds.west, bounds.south, bounds.east, bounds.north].map(Number);
+  if (!bbox.every(Number.isFinite)) return;
+  window.REGULATION_BBOX = bbox;
+  const freshness = window.regulationFreshness;
+  if (!freshness?.setBbox) return;
+  try {
+    freshness.setBbox(bbox, { refresh: true });
+  } catch (error) {
+    console.warn('[regulation] freshness status failed:', error?.message || error);
+  }
 }
 
 function featureIdOf(feature) {
@@ -924,9 +967,11 @@ export async function loadRoadsForView() {
   }
 
   const ds = store.getState().roadDataSource || 'hybrid';
-  const { roads, sidewalks } = await fetchRoadsAndSidewalks(useBounds, ds);
+  const { roads, sidewalks, regulations } = await fetchRoadsAndSidewalks(useBounds, ds);
   store.setGeoJsonDataSets(roads?.features || []);
   store.setSidewalkGeoJSON(sidewalks?.features || []);
+  applyFetchedRegulations(regulations);
+  publishRegulationBounds(useBounds);
   showRoadWidths(roads?.features || [], store.getState().widthOverrides || {});
 
   const bldgCount = await loadBuildingsHybrid(useBounds);
@@ -951,9 +996,11 @@ export async function loadRoadsForRoute(route) {
     east: Math.max(...lngs) + pad
   };
   const ds = store.getState().roadDataSource || 'hybrid';
-  const { roads, sidewalks } = await fetchRoadsAndSidewalks(bounds, ds);
+  const { roads, sidewalks, regulations } = await fetchRoadsAndSidewalks(bounds, ds);
   store.setGeoJsonDataSets(roads?.features || []);
   store.setSidewalkGeoJSON(sidewalks?.features || []);
+  applyFetchedRegulations(regulations);
+  publishRegulationBounds(bounds);
   showRoadWidths(roads?.features || [], store.getState().widthOverrides || {});
 
   const bldgCount = await loadBuildingsHybrid(bounds);
@@ -999,8 +1046,10 @@ export async function loadRoadsWideArea(route, radiusDeg = 0.003, _depth = 0) {
   }
 
   const ds = store.getState().roadDataSource || 'hybrid';
-  const { roads, sidewalks } = await fetchRoadsAndSidewalks(bounds, ds);
+  const { roads, sidewalks, regulations } = await fetchRoadsAndSidewalks(bounds, ds);
   const newFeatures = roads?.features || [];
+  applyFetchedRegulations(regulations, { merge: true });
+  publishRegulationBounds(bounds);
 
   // 既存データとマージ（IDで重複除去）
   const existing = store.getState().geoJsonDataSets || [];
@@ -1306,7 +1355,23 @@ function regulationTypeLabel(type) {
   if (type === 'max_height') return '高さ制限';
   if (type === 'max_width') return '幅制限';
   if (type === 'max_weight') return '重量制限';
+  if (type === 'max_weight_rating') return '車両総重量区分';
+  if (type === 'payload_class_restriction') return '最大積載量区分';
+  if (type === 'max_axle_load') return '軸重制限';
+  if (type === 'max_length') return '長さ制限';
+  if (type === 'max_speed') return '速度制限';
+  if (type === 'min_speed') return '最低速度';
+  if (type === 'school_zone') return 'スクールゾーン';
+  if (type === 'hazmat_restriction') return '危険物積載車規制';
+  if (type === 'toll') return '有料道路';
+  if (type === 'barrier') return 'ゲート・車止め';
+  if (type === 'chain_required') return 'チェーン規制';
+  if (type === 'seasonal_restriction') return '工事・季節規制';
+  if (type === 'stop_control') return '一時停止';
+  if (type === 'parking_restriction') return '駐停車規制';
+  if (type === 'regulation_data_freshness') return '規制データ鮮度';
   if (type === 'time_restriction') return '時間帯規制';
+  if (type === 'turn_restriction') return '右左折・転回規制';
   return type || '規制';
 }
 

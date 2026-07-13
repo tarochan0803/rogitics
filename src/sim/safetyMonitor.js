@@ -135,6 +135,13 @@ export function evaluateSafetyInvariants({
   };
 }
 
+// 持続的な大幅逸脱の既定閾値: advisory の道路逸脱でも「車体の半分以上かつ8m²超が
+// この秒数連続で帯外」なら、幅推定の保守化ノイズではなく実質的なオフロード走行として
+// 違反へ昇格させる。瞬間的な張り出し（K-turnスイング・コーナー掃引）は昇格しない。
+const DEFAULT_ROAD_OUTSIDE_HARD_RATIO = 0.5;
+const DEFAULT_ROAD_OUTSIDE_HARD_AREA_M2 = 8.0;
+const DEFAULT_ROAD_OUTSIDE_HARD_SUSTAIN_S = 2.0;
+
 export function createSafetyMonitor(meta = {}) {
   const trace = createTrace({
     monitor: 'l4sim-safety',
@@ -144,11 +151,39 @@ export function createSafetyMonitor(meta = {}) {
   let tick = 0;
   let firstViolation = null;
   let lastResult = null;
+  let grossExcursionStartS = null;
 
   return {
     push(ctx = {}) {
       tick += 1;
       const result = evaluateSafetyInvariants(ctx);
+
+      // advisoryモードの道路逸脱でも、大幅な帯外が持続する場合は違反へ昇格する。
+      // roadSurface が渡らない tick（端点猶予など）は連続カウントをリセットする。
+      const tol = ctx.tolerances || {};
+      const hardRatio = finite(tol.roadOutsideHardRatio) ?? DEFAULT_ROAD_OUTSIDE_HARD_RATIO;
+      const hardArea = finite(tol.roadOutsideHardAreaM2) ?? DEFAULT_ROAD_OUTSIDE_HARD_AREA_M2;
+      const sustainS = finite(tol.roadOutsideHardSustainS) ?? DEFAULT_ROAD_OUTSIDE_HARD_SUSTAIN_S;
+      const simTimeS = finite(ctx.simTimeS);
+      const gross = result.metrics.roadChecked
+        && Number(result.metrics.roadOutsideRatio) > hardRatio
+        && Number(result.metrics.roadOutsideAreaM2) > hardArea;
+      if (gross && simTimeS != null) {
+        if (grossExcursionStartS == null) grossExcursionStartS = simTimeS;
+        const heldS = simTimeS - grossExcursionStartS;
+        if (heldS >= sustainS) {
+          result.violations.push({
+            type: 'road_surface_excursion_sustained',
+            severity: 'mrm',
+            outsideRatio: result.metrics.roadOutsideRatio,
+            outsideAreaM2: result.metrics.roadOutsideAreaM2,
+            heldS: round(heldS, 2)
+          });
+          result.ok = false;
+        }
+      } else {
+        grossExcursionStartS = null;
+      }
       const record = {
         tick,
         simTimeS: round(ctx.simTimeS, 3),

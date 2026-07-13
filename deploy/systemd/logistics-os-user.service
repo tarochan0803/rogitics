@@ -1,0 +1,15 @@
+[Unit]
+Description=LOGISTICS OS v8 Web and Regulation Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ncnadmin/LOGISTICS_OS_v8.0
+ExecStart=/usr/bin/python3 /home/ncnadmin/LOGISTICS_OS_v8.0/web_server.py 8080
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

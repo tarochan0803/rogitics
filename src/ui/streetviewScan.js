@@ -7,15 +7,19 @@ import * as taskManager from './taskManager.js';
 import { getMapInstance } from './map2d.js';
 import { perceptionWidthAiConfidence } from '../core/vehicleRiskModel.js';
 
-// ── 項目4: 地点キャッシュ（メモリ + localStorage, TTL） ──────────────────────
+// 項目4: 地点キャッシュ（メモリ、開発時のみ localStorage, TTL）
 // 同一路線・同一地点の再スキャン/再YOLOを避ける。画像本体は保存せず、
-// パノラマ照会結果(pano)と YOLO 検出結果(det)だけを保存する。
+// パノラマ照会結果(pano)と YOLO 検出結果(det)は通常メモリ内だけに保持する。
 const SV_CACHE_PREFIX = 'svcache:';
 const SV_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 14; // 14 日
 const SV_CACHE_GRID_M = 5;                          // 約5m grid に量子化
 const SV_CACHE_HEADING_BUCKET = 15;                 // 15°刻み
 const _svMemCache = new Map();
 let _svCacheStats = { panoHit: 0, panoMiss: 0, detHit: 0, detSent: 0 };
+
+function _svAllowDerivedPersistentCache() {
+  return typeof window !== 'undefined' && window.INDEX3D_ALLOW_STREETVIEW_DERIVED_CACHE === true;
+}
 
 // lat/lng を ~5m grid に丸め、heading を 15°刻みに量子化したキー。heading 省略時は位置のみ。
 function _svGridKey(lat, lng, heading) {
@@ -38,6 +42,7 @@ function _svCacheGet(kind, key) {
     if (mem.exp > Date.now()) return mem.data;
     _svMemCache.delete(full);
   }
+  if (!_svAllowDerivedPersistentCache()) return null;
   try {
     const raw = localStorage.getItem(full);
     if (!raw) return null;
@@ -55,6 +60,7 @@ function _svCacheSet(kind, key, data) {
   const full = `${SV_CACHE_PREFIX}${kind}:${key}`;
   const obj = { exp: Date.now() + SV_CACHE_TTL_MS, data };
   _svMemCache.set(full, obj);
+  if (!_svAllowDerivedPersistentCache()) return;
   try {
     localStorage.setItem(full, JSON.stringify(obj));
   } catch (_) {
@@ -62,10 +68,11 @@ function _svCacheSet(kind, key, data) {
   }
 }
 
-// 開発/検証用: キャッシュ全消し（svcache: prefix のみ）。
+// 開発/検証用: 永続キャッシュ全消し（明示的な開発フラグ有効時のみ）。
 export function clearStreetViewCache() {
   _svMemCache.clear();
   _svCacheStats = { panoHit: 0, panoMiss: 0, detHit: 0, detSent: 0 };
+  if (!_svAllowDerivedPersistentCache()) return 0;
   try {
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {

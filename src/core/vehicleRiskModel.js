@@ -69,6 +69,21 @@ export const RISK_TUNING = Object.freeze({
     steepPct: 12.0,    // ここで minFactor に到達（それ以上も minFactor で頭打ち）
     minFactor: 0.60    // 急勾配での速度係数下限
   },
+  // 縦方向動力学（勾配・路面摩擦・積載を反映した制動/加速）の係数。単一の真実源。
+  // physics.js（simulatePathPoses / createKinematicPathFollower）と behaviorPlanner.js が
+  // 同じここを参照するため、制動距離の見積もりと実挙動の物理が一致する。
+  // 教科書物理: θ=atan(gradePct/100)。制動は重力の斜面成分で上りは助かり／下りは食われる。
+  longitudinal: {
+    muDry: 0.7,                  // 乾燥路の付着係数（タイヤ限界の目安）
+    muWet: 0.5,                  // 湿潤路の付着係数
+    comfortDecelMSS: 2.8,        // 平坦・乾燥での目標減速度（従来固定値=後方互換の基準）
+    minDecelMSS: 0.8,            // どんな急勾配・低μでも下回らない制動下限
+    comfortAccelMSS: 1.2,        // 平坦での目標加速度（従来固定値=後方互換の基準）
+    minAccelMSS: 0.3,            // 急な登坂でも下回らない加速下限
+    gravityMSS: 9.80665,         // 重力加速度 g
+    uphillDecelBonusFactor: 1.3, // 上り制動ボーナスの上限＝comfortDecelMSS×この値
+    accelGradePenaltyFactor: 0.6 // 登坂で駆動力が食われる簡易係数（パワートレイン余裕）
+  },
   // 項目4用: YOLO 検出スコア → width_ai の confidence。スコアが高いほど信頼度を上げる。
   // 既定の固定 0.75 を、検出スコアに応じ scoreLo..scoreHi を confMin..confMax へ線形写像する。
   perception: {
@@ -105,6 +120,26 @@ export function clamp01(x) {
 /** lo..hi を t(0..1) で線形補間。 */
 function lerp(lo, hi, t) {
   return lo + (hi - lo) * clamp01(t);
+}
+
+/** 任意区間 [lo,hi] へクランプ。非数は lo（最も保守的）扱い。 */
+function clampRange(x, lo, hi) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return lo;
+  return n < lo ? lo : n > hi ? hi : n;
+}
+
+/**
+ * 路面状態を 'dry'|'wet' に正規化。vehicleConfig.surfaceCondition があれば surface 引数より優先。
+ * @param {string} surface 明示的な路面指定（既定 'dry'）
+ * @param {object|null} vehicleConfig surfaceCondition を持ちうる車両設定
+ * @returns {'dry'|'wet'}
+ */
+function resolveSurfaceCondition(surface, vehicleConfig) {
+  const raw = (vehicleConfig && vehicleConfig.surfaceCondition != null)
+    ? vehicleConfig.surfaceCondition
+    : surface;
+  return String(raw).toLowerCase() === 'wet' ? 'wet' : 'dry';
 }
 
 /**
@@ -231,6 +266,52 @@ export function roadGradeSpeedFactor(feature) {
     : (Number.isFinite(Number(p.demGradeMaxPct)) ? Number(p.demGradeMaxPct) : null);
   if (grade == null) return { factor: 1.0, gradePct: null };
   return { factor: gradeSpeedFactor(grade), gradePct: grade };
+}
+
+/**
+ * 縦方向動力学: 有効制動減速度(m/s²)。教科書物理で勾配・路面摩擦を反映する。
+ * 符号規約: gradePct>0=進行方向の上り坂 / gradePct<0=下り坂。
+ *   θ=atan(gradePct/100)。上り(θ>0)は重力の斜面成分が制動を助け(+g·sinθ)、
+ *   下り(θ<0)は制動を食う(−g·sin|θ|)。
+ * 路面: 低μ路（雨）では ①タイヤ付着限界(μ·g·cosθ)が下がる うえ、②安全側に目標減速度も
+ *   グリップ比(μ/μdry)でデレーティングする（平坦・乾燥=comfortDecelMSS を基準に保つ）。
+ *   ②が無いと平坦では comfort(2.8) が付着限界より小さく、雨の効きが出ないため。
+ * @param {{gradePct?:number, surface?:('dry'|'wet'), vehicleConfig?:object|null}} [args]
+ * @returns {number} 有効制動減速度(m/s²)。minDecelMSS〜comfortDecelMSS×uphillDecelBonusFactor
+ */
+export function effectiveBrakeDecelMSS({ gradePct = 0, surface = 'dry', vehicleConfig = null } = {}) {
+  const L = tuning.longitudinal;
+  const g = L.gravityMSS;
+  const cond = resolveSurfaceCondition(surface, vehicleConfig);
+  const mu = cond === 'wet' ? L.muWet : L.muDry;
+  const gp = Number(gradePct);
+  const theta = Number.isFinite(gp) ? Math.atan(gp / 100) : 0;
+  const gripScale = mu / L.muDry;                 // 乾燥=1.0、湿潤<1.0（目標減速度の安全側デレーティング）
+  const surfaceComfort = L.comfortDecelMSS * gripScale;
+  const frictionCap = mu * g * Math.cos(theta);   // タイヤ付着限界（斜面では法線荷重が cosθ 倍）
+  const capability = Math.min(surfaceComfort, frictionCap);
+  // 上り(sinθ>0)は+、下り(sinθ<0)は−。重力の斜面成分を net 減速度へ反映。
+  const net = capability + g * Math.sin(theta);
+  const upper = L.comfortDecelMSS * L.uphillDecelBonusFactor; // 上り制動ボーナスの頭打ち
+  return clampRange(net, L.minDecelMSS, upper);
+}
+
+/**
+ * 縦方向動力学: 有効加速度(m/s²)。登坂で重力が駆動力を食う分だけ加速を落とす。
+ * 符号規約は effectiveBrakeDecelMSS と同じ（gradePct>0=上り）。下り(sinθ<0)は
+ * comfortAccelMSS で頭打ち（駆動ボーナスは与えない=保守側）。
+ * @param {{gradePct?:number, vehicleConfig?:object|null}} [args] vehicleConfig は将来の積載係数用に予約
+ * @returns {number} 有効加速度(m/s²)。minAccelMSS〜comfortAccelMSS
+ */
+export function effectiveAccelMSS({ gradePct = 0, vehicleConfig = null } = {}) {
+  void vehicleConfig; // 予約（積載反映などの拡張余地）
+  const L = tuning.longitudinal;
+  const g = L.gravityMSS;
+  const gp = Number(gradePct);
+  const theta = Number.isFinite(gp) ? Math.atan(gp / 100) : 0;
+  // 上り(sinθ>0)で重力が駆動を食う。係数 0.6 はパワートレイン余裕の簡易表現。
+  const a = L.comfortAccelMSS - g * Math.sin(theta) * L.accelGradePenaltyFactor;
+  return clampRange(a, L.minAccelMSS, L.comfortAccelMSS);
 }
 
 /**

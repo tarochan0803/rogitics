@@ -532,6 +532,22 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border: 0; bo
 
 .sub-status { min-height: 15px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
+.regulation-freshness { display: grid; gap: 2px; margin-top: 2px; padding: 6px 8px; border: 1px solid var(--line); background: var(--inset); font-size: 10px; }
+.regulation-freshness-main { display: flex; align-items: center; gap: 7px; min-height: 22px; }
+.regulation-freshness-label { color: var(--muted); }
+.regulation-freshness strong { color: var(--danger); font-family: var(--mono); font-size: 10px; font-weight: 600; }
+.regulation-freshness[data-state="fresh"] strong { color: var(--ok); }
+.regulation-freshness[data-state="stale"] strong,
+.regulation-freshness[data-state="expired"] strong { color: var(--warn); }
+.regulation-freshness-detail { color: var(--muted); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.regulation-freshness-review { color: var(--warn); font-weight: 600; }
+.icon-btn { display: inline-grid; place-items: center; width: 24px; height: 24px; margin-left: auto; padding: 0; color: var(--text-2); background: transparent; border: 1px solid var(--line-2); border-radius: var(--r); cursor: pointer; }
+.icon-btn:hover { color: var(--text); border-color: var(--line-3); }
+.icon-btn:disabled { opacity: .45; cursor: wait; }
+.icon-btn svg { width: 13px; height: 13px; }
+.regulation-freshness[data-loading="true"] .icon-btn svg { animation: regulation-refresh-spin .8s linear infinite; }
+@keyframes regulation-refresh-spin { to { transform: rotate(360deg); } }
+
 /* =====================================================================
    Metrics — instrument readout grid
    ===================================================================== */

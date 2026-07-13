@@ -394,7 +394,12 @@ export async function runDeliveryAssessment(params = {}) {
       cargoLoadType: params.cargoLoadType,
       cargoCount: params.cargoCount,
       clearanceMargin: params.clearanceMargin,
-      corridorM: params.regulationCorridorM
+      corridorM: params.regulationCorridorM,
+      assessmentTime: params.assessmentTime,
+      timeZone: params.regulationTimeZone || 'Asia/Tokyo',
+      isHazmat: !!params.isHazmat,
+      snowChainsFitted: params.snowChainsFitted,
+      dataFreshness: params.regulationDataFreshness || null
     }
   });
   const regulationStatus = regulationAssessment?.status || 'pass';

@@ -209,6 +209,11 @@ export function localReroute(segmentStartIdx, segmentEndIdx, simRoute, geoJsonDa
       ignoreOneway: false,
       vehicleHeight: vehicleConfig?.vehicleHeight,
       vehicleWeight: vehicleConfig?.grossWeight,
+      vehiclePayloadRating: vehicleConfig?.ratedPayloadT,
+      vehicleLength: Math.max(0,
+        Number(vehicleConfig?.wheelBase || 0)
+        + Number(vehicleConfig?.frontOverhang || 0)
+        + Number(vehicleConfig?.rearOverhang || 0)),
       vehicleWidth,
       minRoadWidth
     },

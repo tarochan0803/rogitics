@@ -84,6 +84,20 @@ function parseMaxWidthFromTags(tags = {}) {
   return null;
 }
 
+function payloadClassThresholdFromTags(tags = {}) {
+  for (const key of ['maxpayload', 'max_payload', 'payload_limit', 'traffic_sign:payload']) {
+    const value = parseTonsFromTag(tags[key]);
+    if (value != null) return value;
+  }
+  const signs = Object.entries(tags)
+    .filter(([key]) => key === 'traffic_sign' || key.startsWith('traffic_sign:') || key.includes('supplementary'))
+    .map(([, value]) => String(value ?? ''))
+    .join(';');
+  if (!/JP:305-2(?:\D|$)/i.test(signs)) return null;
+  const match = signs.match(/(?:JP:305-2|JP:503-C)[^;]*?([0-9]+(?:\.[0-9]+)?)\s*t/i);
+  return match ? Number(match[1]) : null;
+}
+
 // P2-4: 路面品質・通行制約タグからコスト乗数を算出
 // 大型車向け: 舗装路 > 砂利 > 未舗装 / 滑らかさ良 > 普通 > 悪 / 林道グレード低 > 高
 function surfaceCostMultiplier(tags) {
@@ -118,6 +132,22 @@ function surfaceCostMultiplier(tags) {
   return mul;
 }
 
+function operationalCostMultiplier(tags, { isHazmat = false, snowChainsFitted = null } = {}) {
+  let multiplier = 1;
+  const toll = String(tags?.['toll:hgv'] ?? tags?.toll ?? '').toLowerCase();
+  if (['yes', '1', 'true'].includes(toll)) multiplier *= 1.22;
+  const winter = String(tags?.winter_service || '').toLowerCase();
+  if (winter === 'limited') multiplier *= 1.15;
+  if (winter === 'no') multiplier *= 1.35;
+  if (String(tags?.seasonal || '').toLowerCase() === 'yes') multiplier *= 1.2;
+  if (isHazmat && ['destination', 'delivery', 'private', 'permit'].includes(String(tags?.hazmat || '').toLowerCase())) {
+    multiplier *= 1.4;
+  }
+  const chainRequired = ['required', 'yes'].includes(String(tags?.snow_chains ?? tags?.winter_equipment ?? '').toLowerCase());
+  if (chainRequired && snowChainsFitted == null) multiplier *= 1.5;
+  return multiplier;
+}
+
 // 大型車（HGV）禁止チェック。`no` の場合エッジを排除、`designated` は許可。
 function isHgvForbidden(tags) {
   const hgv = String(tags?.hgv || '').toLowerCase();
@@ -131,6 +161,10 @@ export function buildRoadGraph(geoJsonDataSets = [], opts = {}) {
     ignoreOnewayOnMultiLane = false, // Keep legal direction unless permission mode explicitly overrides it.
     vehicleHeight = 0,
     vehicleWeight = 0,
+    vehiclePayloadRating = 0,
+    vehicleLength = 0,
+    isHazmat = false,
+    snowChainsFitted = null,
     vehicleWidth = 0,
     minRoadWidth = 0,
     narrowPenaltyFactor = 1.2
@@ -179,14 +213,21 @@ export function buildRoadGraph(geoJsonDataSets = [], opts = {}) {
     const tags = (f.properties && (f.properties.tags || f.properties)) || {};
     const hw = tags.highway;
     if (hw && !allowed.has(hw)) continue;
-    const access = tags.access?.toLowerCase();
+    const access = String(tags.access || '').toLowerCase();
     if (access === 'no' || access === 'private') continue;
-    const truck = tags.truck?.toLowerCase();
+    const vehicleAccess = String(tags.vehicle || tags.motor_vehicle || '').toLowerCase();
+    if (vehicleAccess === 'no' || vehicleAccess === 'private') continue;
+    const truck = String(tags.truck || tags.goods || '').toLowerCase();
     if (truck === 'no') continue;
-    const motorcar = tags.motorcar?.toLowerCase();
+    const motorcar = String(tags.motorcar || '').toLowerCase();
     if (motorcar === 'no') continue;
     // P2-4: HGV (大型車) 禁止タグを尊重。`hgv=designated` は許可、`hgv=no` のみ除外。
     if (String(tags.hgv || '').toLowerCase() === 'no') continue;
+    if (isHazmat && String(tags.hazmat || '').toLowerCase() === 'no') continue;
+    const construction = String(tags.construction || '').toLowerCase();
+    if (construction && construction !== 'no' && String(tags.access || '').toLowerCase() !== 'yes') continue;
+    const chainRequired = ['required', 'yes'].includes(String(tags.snow_chains ?? tags.winter_equipment ?? '').toLowerCase());
+    if (chainRequired && snowChainsFitted === false) continue;
     if (vehicleHeight > 0) {
       const maxH = parseMetersFromTag(tags.maxheight);
       if (maxH !== null && vehicleHeight > maxH) continue;
@@ -194,6 +235,16 @@ export function buildRoadGraph(geoJsonDataSets = [], opts = {}) {
     if (vehicleWeight > 0) {
       const maxW = parseTonsFromTag(tags.maxweight);
       if (maxW !== null && vehicleWeight > maxW) continue;
+      const maxRating = parseTonsFromTag(tags['maxweightrating:hgv'] ?? tags['maxweightrating:goods'] ?? tags.maxweightrating);
+      if (maxRating !== null && vehicleWeight > maxRating) continue;
+    }
+    if (vehiclePayloadRating > 0) {
+      const minPayload = payloadClassThresholdFromTags(tags);
+      if (minPayload !== null && vehiclePayloadRating >= minPayload) continue;
+    }
+    if (vehicleLength > 0) {
+      const maxLength = parseMetersFromTag(tags.maxlength);
+      if (maxLength !== null && vehicleLength > maxLength) continue;
     }
     if (vehicleWidth > 0) {
       const maxWidth = parseMaxWidthFromTags(tags);
@@ -224,7 +275,8 @@ export function buildRoadGraph(geoJsonDataSets = [], opts = {}) {
     }
     // P2-4: 路面品質コスト乗数を統合（舗装/砂利/未舗装、滑らかさ、林道グレード）
     const surfaceMul = surfaceCostMultiplier(tags);
-    const totalCostMul = widthPenalty * surfaceMul;
+    const operationalMul = operationalCostMultiplier(tags, { isHazmat, snowChainsFitted });
+    const totalCostMul = widthPenalty * surfaceMul * operationalMul;
     const addLine = (coords) => {
       for (let i = 0; i < coords.length - 1; i++) {
         const a = coords[i];
@@ -249,7 +301,8 @@ export function buildRoadGraph(geoJsonDataSets = [], opts = {}) {
             widthFusionPolicy: widthInfo.fusionPolicy,
             widthDisagreement: widthInfo.disagreement,
             widthPenalty,
-            surfaceMul
+            surfaceMul,
+            operationalMul
           });
         }
       }

@@ -93,9 +93,41 @@ function formatBBox(bounds) {
   return `${south},${west},${north},${east}`;
 }
 
+function roadAndRegulationQuery(bounds) {
+  const bbox = formatBBox(bounds);
+  return `[out:json][timeout:20];
+(
+way["highway"~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|track)$"]["area"!~"yes"](${bbox});
+node["traffic_sign"~"^JP:3"](${bbox});
+node["barrier"](${bbox});
+node["highway"~"^(stop|give_way)$"](${bbox});
+relation["type"~"^restriction"](${bbox});
+);
+out meta geom;`;
+}
+
 export async function fetchRoadGeoJSON(bounds) {
   const { roads } = await fetchRoadsAndSidewalks(bounds);
   return roads;
+}
+
+export async function fetchLatestRegulations(bounds, { force = false, managedOnly = false } = {}) {
+  const query = roadAndRegulationQuery(bounds);
+  let osmJson;
+  try {
+    osmJson = await runManagedRegulationRefresh(bounds, force);
+  } catch (managedError) {
+    if (managedOnly) throw managedError;
+    console.warn('[regulation] managed snapshot unavailable, using direct Overpass:', managedError.message);
+    osmJson = await runOverpass(query);
+  }
+  const { osmtogeojson } = await ensureOsmToGeoJSON();
+  const geojson = osmtogeojson(osmJson);
+  const lines = (geojson?.features || []).filter((feature) =>
+    (feature?.geometry?.type === 'LineString' || feature?.geometry?.type === 'MultiLineString')
+      && hasRegulationTags(feature)
+  );
+  return toFeatureCollection([...lines, ...rawRegulationFeatures(osmJson)]);
 }
 
 export { runOverpass };
@@ -104,6 +136,13 @@ function getTags(feature) {
   const props = feature?.properties;
   if (props && typeof props === 'object') return props.tags && typeof props.tags === 'object' ? props.tags : props;
   return {};
+}
+
+function hasRegulationTags(feature) {
+  const tags = getTags(feature);
+  return Object.keys(tags).some((key) =>
+    /^(access|vehicle|motor_vehicle|motorcar|truck|hgv|goods|hazmat|oneway|maxheight|maxwidth|maxweight|maxweightrating|maxaxleload|maxlength|maxspeed|minspeed|school_zone|restriction|traffic_sign|toll|charge|construction|seasonal|winter_service|snowplowing|snow_chains|winter_equipment|parking|stopping)(:|$)/.test(key)
+  );
 }
 
 function isFootPathHighway(highway) {
@@ -144,6 +183,116 @@ function isDrivableRoad(feature) {
 
 function toFeatureCollection(features) {
   return { type: 'FeatureCollection', features };
+}
+
+async function runManagedRegulationRefresh(bounds, force = false) {
+  const bbox = [bounds?.west, bounds?.south, bounds?.east, bounds?.north].map(Number);
+  if (!bbox.every(Number.isFinite)) throw new Error('invalid regulation bbox');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS + 10000);
+  try {
+    const response = await fetch('/api/regulations/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bbox, force: !!force }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`managed regulation refresh HTTP ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.overpass || !Array.isArray(payload.overpass.elements)) {
+      throw new Error('managed regulation snapshot is unavailable');
+    }
+    if (typeof window !== 'undefined') {
+      window.REGULATION_BBOX = bbox.slice();
+      window.REGULATION_FRESHNESS_PAYLOAD = payload;
+      window.regulationFreshness?.setBbox?.(bbox);
+      window.regulationFreshness?.renderPayload?.(payload);
+    }
+    return payload.overpass;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function memberLineGeometry(member) {
+  const coordinates = (member?.geometry || [])
+    .map((point) => [Number(point.lon), Number(point.lat)])
+    .filter((point) => point.every(Number.isFinite));
+  return coordinates.length >= 2 ? { type: 'LineString', coordinates } : null;
+}
+
+function restrictionRelationFeature(element) {
+  if (element?.type !== 'relation' || !String(element.tags?.type || '').startsWith('restriction')) return null;
+  const fromMember = (element.members || []).find((member) => member.role === 'from');
+  const toMember = (element.members || []).find((member) => member.role === 'to');
+  const viaMember = (element.members || []).find((member) => member.role === 'via');
+  const fromGeometry = memberLineGeometry(fromMember);
+  const toGeometry = memberLineGeometry(toMember);
+  let viaGeometry = memberLineGeometry(viaMember);
+  if (!viaGeometry && Number.isFinite(Number(viaMember?.lon)) && Number.isFinite(Number(viaMember?.lat))) {
+    viaGeometry = { type: 'Point', coordinates: [Number(viaMember.lon), Number(viaMember.lat)] };
+  }
+  const lines = [fromGeometry, toGeometry, viaGeometry]
+    .filter((geometry) => geometry?.type === 'LineString')
+    .map((geometry) => geometry.coordinates);
+  if (!fromGeometry || !toGeometry || !lines.length) return null;
+  return {
+    type: 'Feature',
+    id: `relation/${element.id}`,
+    properties: {
+      id: `relation/${element.id}`,
+      tags: element.tags || {},
+      source: 'OSM',
+      updatedAt: element.timestamp || null,
+      osmVersion: element.version ?? null,
+      restrictionRelation: {
+        restriction: element.tags?.['restriction:hgv'] || element.tags?.restriction || null,
+        fromWayId: fromMember?.ref != null ? String(fromMember.ref) : null,
+        toWayId: toMember?.ref != null ? String(toMember.ref) : null,
+        viaId: viaMember?.ref != null ? String(viaMember.ref) : null,
+        fromGeometry,
+        toGeometry,
+        viaGeometry
+      }
+    },
+    geometry: { type: 'MultiLineString', coordinates: lines }
+  };
+}
+
+function rawRegulationFeatures(overpassJson) {
+  const features = [];
+  for (const element of overpassJson?.elements || []) {
+    const tags = element.tags || {};
+    if (element.type === 'node') {
+      const barrier = String(tags.barrier || '').toLowerCase();
+      const relevantBarrier = [
+        'bollard', 'block', 'bar', 'chain', 'jersey_barrier', 'barrier_board',
+        'gate', 'lift_gate', 'swing_gate', 'sliding_gate', 'rising_bollard', 'toll_booth'
+      ].includes(barrier) || ['no', 'private', 'destination'].includes(
+        String(tags.motor_vehicle ?? tags.vehicle ?? tags.access ?? '').toLowerCase()
+      );
+      const isRegulationNode = /^JP:3/i.test(String(tags.traffic_sign || ''))
+        || relevantBarrier
+        || ['stop', 'give_way'].includes(String(tags.highway || '').toLowerCase());
+      if (!isRegulationNode || !Number.isFinite(Number(element.lon)) || !Number.isFinite(Number(element.lat))) continue;
+      features.push({
+        type: 'Feature',
+        id: `node/${element.id}`,
+        properties: {
+          id: `node/${element.id}`,
+          tags,
+          source: 'OSM',
+          updatedAt: element.timestamp || null,
+          osmVersion: element.version ?? null
+        },
+        geometry: { type: 'Point', coordinates: [Number(element.lon), Number(element.lat)] }
+      });
+    } else if (element.type === 'relation') {
+      const feature = restrictionRelationFeature(element);
+      if (feature) features.push(feature);
+    }
+  }
+  return features;
 }
 
 function asLineStrings(feature) {
@@ -303,22 +452,27 @@ function mergeHybridRoads(osmRoads = [], gsiRoads = []) {
 }
 
 export async function fetchRoadsAndSidewalks(bounds, dataSource = 'hybrid') {
-  const bbox = formatBBox(bounds);
   let osmRoads = [];
   let sidewalksArr = [];
+  let regulationFeatures = [];
 
   // OSM繝・・繧ｿ縺ｮ蜿門ｾ・(osm 縺ｾ縺溘・ hybrid 縺ｮ蝣ｴ蜷・
   if (dataSource === 'osm' || dataSource === 'hybrid') {
-    const body = `[out:json][timeout:20];
-way["highway"~"^(motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|living_street|service|track)$"]["area"!~"yes"](${bbox});
-out body geom;`;
+    const body = roadAndRegulationQuery(bounds);
     try {
-      const osmJson = await runOverpass(body);
+      let osmJson;
+      try {
+        osmJson = await runManagedRegulationRefresh(bounds);
+      } catch (managedError) {
+        console.warn('[regulation] managed refresh unavailable, using direct Overpass:', managedError.message);
+        osmJson = await runOverpass(body);
+      }
       const { osmtogeojson } = await ensureOsmToGeoJSON();
       const geojson = osmtogeojson(osmJson);
       const lineFeatures = (geojson?.features || []).filter(
         (f) => f.geometry && (f.geometry.type === 'LineString' || f.geometry.type === 'MultiLineString')
       );
+      regulationFeatures = [...lineFeatures.filter(hasRegulationTags), ...rawRegulationFeatures(osmJson)];
       for (const f of lineFeatures) {
         if (isSidewalkFeature(f)) {
           sidewalksArr.push({ ...f, properties: { ...(f.properties || {}), kind: 'sidewalk' } });
@@ -355,7 +509,11 @@ out body geom;`;
     throw new Error('No road data was found in the selected area.');
   }
 
-  return { roads: toFeatureCollection(mergedRoads), sidewalks: toFeatureCollection(sidewalksArr) };
+  return {
+    roads: toFeatureCollection(mergedRoads),
+    sidewalks: toFeatureCollection(sidewalksArr),
+    regulations: toFeatureCollection(regulationFeatures)
+  };
 }
 
 export async function fetchBuildings(bounds) {

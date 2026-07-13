@@ -3,6 +3,7 @@ import { store } from './state.js';
 import { geocodeSearch } from './api/nominatim.js';
 import { chibanToAddress } from './api/zenrinChiban.js';
 import { fetchOsrmRoute } from './api/osrm.js';
+import { fetchLatestRegulations } from './api/overpass.js';
 import { initMap2D, focusToRoute, getMapInstance, setSearchMarker, focusTo } from './ui/map2d.js';
 import {
   initThree3D,
@@ -39,6 +40,12 @@ import {
 } from './3d/perceptionFusion.js';
 import { scanStreetView, analyzeStreetView, getStreetViewFrames } from './ui/streetviewScan.js';
 import { html, unsafeHtml } from './utils/html.js';
+import { buildOsmRegulationLayer } from './core/osmRegulationAdapter.js';
+import {
+  getActiveExternalRegulations,
+  mergeRegulationLayers,
+  setActiveExternalRegulations
+} from './core/jarticRegulationAdapter.js';
 
 const DEFAULT_START = '東京駅';
 const DEFAULT_GOAL = '丸の内仲通り';
@@ -684,6 +691,7 @@ async function loadWorldForRoute() {
     store.setGeoJsonDataSets(world.roads);
     store.setSidewalkGeoJSON(world.sidewalks);
     store.setBuildingsGeoJSON(world.buildings);
+    setActiveExternalRegulations(buildOsmRegulationLayer(world.regulations || []));
     store.setState({ plateauTileset: world.plateauTileset || null, compiledWorldHash: null });
     if (typeof window !== 'undefined') window.PLATEAU_AUTO_TILESET = world.plateauTileset || null;
     state.lastWorldMetrics = world.metrics;
@@ -701,7 +709,7 @@ async function loadWorldForRoute() {
     renderAutonomyPanel();
     setStatus('3Dワールドを読み込みました。');
     toast('3Dワールドを読み込みました');
-    logLine(`3Dワールド読込完了: 道路=${world.metrics.roadFeatures}, 建物=${world.metrics.buildingFeatures}, PLATEAU=${plateauTileLabel || 'なし'}, AOI=${world.metrics.boundsAreaHa}ha`);
+    logLine(`3Dワールド読込完了: 道路=${world.metrics.roadFeatures}, 規制標識=${world.metrics.regulationFeatures || 0}, 建物=${world.metrics.buildingFeatures}, PLATEAU=${plateauTileLabel || 'なし'}, AOI=${world.metrics.boundsAreaHa}ha`);
     // 経路確定→3D world読込が済んだら、経路コリドーの道へ AI(width_ai) を自動適用する。
     // 実SV/YOLO（runRealPerceptionFusion）は Google API を使う。window.INDEX3D_AUTO_PERCEPTION=false で無効化。
     // 非ブロッキング + 世代ガードつき。古いスキャン結果は新ルートへ適用しない。
@@ -1457,7 +1465,14 @@ async function runPhase7PlaybackValidation({ timeoutMs = 22000, speedKmh = 32 } 
     const recovered = Number(metrics.recoveryPlaybackCount || 0) > 0;
     const movedPastRecovery = Number(metrics.progressM || 0) >= Math.max(12, Number(metrics.recoveryBypassUntilM || 0) - 1);
     const notStopped = metrics.currentMode !== 'STOP';
-    if (recovered && movedPastRecovery && notStopped) {
+    const avoidanceActive = String(metrics.drivePlaybackRouteSource || '').includes('avoidance');
+    const firstStopM = Number(metrics.firstStopDistanceM);
+    const avoidancePassM = Number.isFinite(firstStopM) && firstStopM > 0
+      ? firstStopM + 4
+      : Math.max(12, Number(metrics.totalM || 0) * 0.45);
+    const movedPastAvoidance = Number(metrics.progressM || 0) >= avoidancePassM;
+    const safetyOk = metrics.safety?.status !== 'MRM_STOP';
+    if ((recovered && movedPastRecovery && notStopped) || (avoidanceActive && movedPastAvoidance && notStopped && safetyOk)) {
       ok = true;
       break;
     }
@@ -1871,6 +1886,20 @@ function exposeTestHooks() {
   window.index3DLoadCompiledWorld = async (jsonOrObj) => {
     const { applyWorldToStore } = await import('./world/worldLoader.js');
     const info = applyWorldToStore(jsonOrObj, store);
+    try {
+      const roads = store.getState().geoJsonDataSets || [];
+      if (roads.length) {
+        const { turf } = await import('./utils/geo.js');
+        const [west, south, east, north] = turf.bbox({ type: 'FeatureCollection', features: roads });
+        const latest = await fetchLatestRegulations({ west, south, east, north }, { managedOnly: true });
+        const dynamicLayer = buildOsmRegulationLayer(latest?.features || []);
+        setActiveExternalRegulations(mergeRegulationLayers(getActiveExternalRegulations(), dynamicLayer));
+        info.latestRegulations = dynamicLayer.length;
+      }
+    } catch (error) {
+      info.regulationRefreshError = error?.message || String(error);
+      console.warn('[regulation] compiled world refresh failed; retained snapshot:', info.regulationRefreshError);
+    }
     state.worldLoaded = true;
     renderSceneThree(store.getState());
     renderRoadWidthPanel();
@@ -1878,7 +1907,7 @@ function exposeTestHooks() {
     renderAutonomyPanel();
     updateMetrics();
     setStatus(`コンパイル済みワールドを読み込みました (hash=${info.hash})`);
-    logLine(`コンパイル済みワールド読込: hash=${info.hash} roads=${info.roads} buildings=${info.buildings} regulations=${info.regulations}`);
+    logLine(`コンパイル済みワールド読込: hash=${info.hash} roads=${info.roads} buildings=${info.buildings} regulations=${info.regulations} latest=${info.latestRegulations ?? 'LKG'}`);
     return info;
   };
   window.index3DPlay = run3D;

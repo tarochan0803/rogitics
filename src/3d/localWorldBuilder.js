@@ -129,7 +129,7 @@ export async function buildLocalWorld(route, {
   }
 
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const { roads, sidewalks } = await fetchRoadsAndSidewalks(bounds, roadDataSource);
+  const { roads, sidewalks, regulations } = await fetchRoadsAndSidewalks(bounds, roadDataSource);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const buildingResult = await loadBuildings(bounds, plateauUrl);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -137,12 +137,14 @@ export async function buildLocalWorld(route, {
 
   const roadFeatures = Array.isArray(roads?.features) ? roads.features : [];
   const sidewalkFeatures = Array.isArray(sidewalks?.features) ? sidewalks.features : [];
+  const regulationFeatures = Array.isArray(regulations?.features) ? regulations.features : [];
 
   return {
     bounds,
     radiusMeters: radius,
     roads: roadFeatures,
     sidewalks: sidewalkFeatures,
+    regulations: regulationFeatures,
     buildings: buildingResult.features,
     plateauTileset,
     metrics: {
@@ -151,6 +153,7 @@ export async function buildLocalWorld(route, {
       boundsAreaHa: Number(size.areaHa.toFixed(2)),
       roadFeatures: roadFeatures.length,
       sidewalkFeatures: sidewalkFeatures.length,
+      regulationFeatures: regulationFeatures.length,
       buildingFeatures: buildingResult.features.length,
       osmBuildingFeatures: buildingResult.osmCount,
       plateauBuildingFeatures: buildingResult.plateauCount,

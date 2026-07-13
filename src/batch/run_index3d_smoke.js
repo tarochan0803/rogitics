@@ -323,7 +323,7 @@ async function main() {
     const fatalErrors = [
       ...pageErrors,
       // PLATEAU(CORS/取得失敗→OSMフォールバック) や 未起動の任意ローカルサーバ(YOLO :8001 等)は致命扱いしない
-      ...consoleErrors.filter((line) => !/Google|favicon|ERR_ABORTED|ERR_CONNECTION_TIMED_OUT|429|504|Too Many Requests|Gateway Timeout|ResizeObserver|plateau|mlit\.go\.jp|3d-tiles|tileset\.json|CORS|Failed to fetch|esm\.sh|ERR_CONNECTION_REFUSED|:8001|yolo/i.test(line))
+      ...consoleErrors.filter((line) => !/Google|favicon|ERR_ABORTED|ERR_CONNECTION_TIMED_OUT|429|504|status of 503|Too Many Requests|Gateway Timeout|ResizeObserver|plateau|mlit\.go\.jp|mreversegeocoder\.gsi\.go\.jp|3d-tiles|tileset\.json|CORS|Failed to fetch|esm\.sh|ERR_CONNECTION_REFUSED|:8001|yolo/i.test(line))
     ];
     if (fatalErrors.length) {
       throw new Error(`Browser errors:\n${fatalErrors.join('\n')}`);

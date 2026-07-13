@@ -90,56 +90,56 @@ export const VEHICLE_PRESETS = {
   '2t_flat': {
     label: '2t Flatbed', bodyType: 'flatbed',
     wheelBase: 2.5, frontOverhang: 1.08, rearOverhang: 1.11,
-    vehicleWidth: 1.7, vehicleHeight: 2.0, grossWeight: 4.5,
+    vehicleWidth: 1.7, vehicleHeight: 2.0, grossWeight: 4.5, ratedPayloadT: 2,
     bedLength: 3.1, maxRearLoadLength: 3.41, maxLegalLength: 5.628,
     maxSteeringAngle: 40, templateTurnRadius: 6
   },
   '2t_unic': {
     label: '2t Unic', bodyType: 'unic',
     wheelBase: 2.5, frontOverhang: 1.08, rearOverhang: 1.11,
-    vehicleWidth: 1.7, vehicleHeight: 2.0, grossWeight: 4.5,
+    vehicleWidth: 1.7, vehicleHeight: 2.0, grossWeight: 4.5, ratedPayloadT: 2,
     bedLength: 2.6, maxRearLoadLength: 2.86, maxLegalLength: 5.628,
     maxSteeringAngle: 40, templateTurnRadius: 6
   },
   '3t_flat': {
     label: '3t Flatbed', bodyType: 'flatbed',
     wheelBase: 3.4, frontOverhang: 1.1, rearOverhang: 1.7,
-    vehicleWidth: 2.1, vehicleHeight: 2.2, grossWeight: 5.0,
+    vehicleWidth: 2.1, vehicleHeight: 2.2, grossWeight: 5.0, ratedPayloadT: 3,
     bedLength: 4.36, maxRearLoadLength: 4.796, maxLegalLength: 7.44,
     maxSteeringAngle: 40, templateTurnRadius: 7
   },
   '3t_unic': {
     label: '3t Unic', bodyType: 'unic',
     wheelBase: 3.4, frontOverhang: 1.1, rearOverhang: 1.7,
-    vehicleWidth: 2.1, vehicleHeight: 2.2, grossWeight: 5.0,
+    vehicleWidth: 2.1, vehicleHeight: 2.2, grossWeight: 5.0, ratedPayloadT: 3,
     bedLength: 4.5, maxRearLoadLength: 4.95, maxLegalLength: 7.44,
     maxSteeringAngle: 40, templateTurnRadius: 7
   },
   '4t_flat': {
     label: '4t Flatbed', bodyType: 'flatbed',
     wheelBase: 4.69, frontOverhang: 1.31, rearOverhang: 2.0,
-    vehicleWidth: 2.3, vehicleHeight: 2.5, grossWeight: 8.0,
+    vehicleWidth: 2.3, vehicleHeight: 2.5, grossWeight: 8.0, ratedPayloadT: 4,
     bedLength: 6.2, maxRearLoadLength: 6.82, maxLegalLength: 9.6,
     maxSteeringAngle: 42, templateTurnRadius: 8.5
   },
   '4t_unic': {
     label: '4t Unic', bodyType: 'unic',
     wheelBase: 4.69, frontOverhang: 1.31, rearOverhang: 2.0,
-    vehicleWidth: 2.3, vehicleHeight: 2.5, grossWeight: 8.0,
+    vehicleWidth: 2.3, vehicleHeight: 2.5, grossWeight: 8.0, ratedPayloadT: 4,
     bedLength: 5.5, maxRearLoadLength: 6.05, maxLegalLength: 9.6,
     maxSteeringAngle: 42, templateTurnRadius: 8.5
   },
   '10t_unic': {
     label: '10t Unic', bodyType: 'unic',
     wheelBase: 6.5, frontOverhang: 1.5, rearOverhang: 4.0,
-    vehicleWidth: 2.5, vehicleHeight: 3.6, grossWeight: 20,
+    vehicleWidth: 2.5, vehicleHeight: 3.6, grossWeight: 20, ratedPayloadT: 10,
     bedLength: 8.5, maxRearLoadLength: 9.35, maxLegalLength: 14.4,
     maxSteeringAngle: 45, templateTurnRadius: 11
   },
   'trailer_15t': {
     label: 'Trailer 15t', bodyType: 'trailer',
     wheelBase: 6.5, frontOverhang: 1.5, rearOverhang: 4.0,
-    vehicleWidth: 2.5, vehicleHeight: 3.8, grossWeight: 25,
+    vehicleWidth: 2.5, vehicleHeight: 3.8, grossWeight: 25, ratedPayloadT: 15,
     bedLength: 8.7, maxRearLoadLength: 9.57, maxLegalLength: 14.4,
     maxSteeringAngle: 45, templateTurnRadius: 12
   }

@@ -14,7 +14,8 @@ import os
 import socket
 import subprocess
 import sys
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 try:
     from server.runtime_settings import get_allowed_origins, get_public_runtime_config, load_runtime_settings
@@ -24,9 +25,11 @@ try:
         address_to_bluemap,
         bluemap_to_address,
     )
+    from server.regulation_refresh import RegulationInputError, RegulationRefreshService
 except ImportError:
     from runtime_settings import get_allowed_origins, get_public_runtime_config, load_runtime_settings
     from zips_proxy import ZipsConfigurationError, ZipsProxyError, address_to_bluemap, bluemap_to_address
+    from regulation_refresh import RegulationInputError, RegulationRefreshService
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,9 +37,20 @@ SERVER_DIR = os.path.join(BASE_DIR, 'server')
 DEFAULT_BIND_HOST = '127.0.0.1'
 RUNTIME_SETTINGS = load_runtime_settings()
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(RUNTIME_SETTINGS['server']['webPort'])
+try:
+    PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(RUNTIME_SETTINGS['server']['webPort'])
+except ValueError:
+    # Importers such as unittest put a module name in argv[1].
+    PORT = int(RUNTIME_SETTINGS['server']['webPort'])
 YOLO_PORT = int(os.environ.get('YOLO_PORT', str(RUNTIME_SETTINGS['server']['yoloPort'])))
 _yolo_proc: 'subprocess.Popen | None' = None
+REGULATION_SERVICE = RegulationRefreshService()
+MAX_REGULATION_REQUEST_BYTES = 16 * 1024
+MAX_REGULATION_QUERY_BYTES = 1024
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
 
 
 def _resolve_bind_host() -> str:
@@ -75,25 +89,33 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path == '/api/start-yolo':
+        path = urlparse(self.path).path
+        if path == '/api/start-yolo':
             self._start_yolo()
             return
-        if self.path == '/api/zips/address-to-bluemap':
+        if path == '/api/zips/address-to-bluemap':
             self._zips_address_to_bluemap()
             return
-        if self.path == '/api/zips/bluemap-to-address':
+        if path == '/api/zips/bluemap-to-address':
             self._zips_bluemap_to_address()
+            return
+        if path == '/api/regulations/refresh':
+            self._regulations_refresh()
             return
         self.send_error(404)
 
     def do_GET(self):
-        if self.path == '/api/status':
+        path = urlparse(self.path).path
+        if path == '/api/status':
             self._status()
             return
-        if self.path == '/runtime-config.js':
+        if path == '/api/regulations/status':
+            self._regulations_status()
+            return
+        if path == '/runtime-config.js':
             self._runtime_config_script()
             return
-        if self.path == '/':
+        if path == '/':
             self.send_response(301)
             self.send_header('Location', '/index8.2.html')
             self.end_headers()
@@ -145,11 +167,15 @@ class Handler(SimpleHTTPRequestHandler):
 
         self._json({'status': 'starting', 'pid': _yolo_proc.pid})
 
-    def _read_json_body(self) -> dict:
+    def _read_json_body(self, max_bytes: int | None = None) -> dict:
         try:
             length = int(self.headers.get('Content-Length', '0') or '0')
         except ValueError:
             length = 0
+        if length < 0:
+            raise ValueError('invalid Content-Length')
+        if max_bytes is not None and length > max_bytes:
+            raise RequestBodyTooLarge(f'request body exceeds {max_bytes} bytes')
         raw = self.rfile.read(length) if length > 0 else b'{}'
         if not raw:
             return {}
@@ -157,6 +183,33 @@ class Handler(SimpleHTTPRequestHandler):
             return json.loads(raw.decode('utf-8'))
         except Exception:
             raise ValueError('invalid JSON body')
+
+    def _regulations_status(self):
+        raw_query = urlparse(self.path).query
+        if len(raw_query.encode('utf-8')) > MAX_REGULATION_QUERY_BYTES:
+            self._json({'error': f'query exceeds {MAX_REGULATION_QUERY_BYTES} bytes'}, 414)
+            return
+        query = parse_qs(raw_query, keep_blank_values=True)
+        values = query.get('bbox') or []
+        if len(values) != 1:
+            self._json({'error': 'bbox query parameter is required'}, 400)
+            return
+        try:
+            bbox = [float(item) for item in values[0].split(',')]
+            self._json(REGULATION_SERVICE.status(bbox))
+        except (ValueError, RegulationInputError) as exc:
+            self._json({'error': str(exc)}, 400)
+
+    def _regulations_refresh(self):
+        try:
+            payload = self._read_json_body(MAX_REGULATION_REQUEST_BYTES)
+            if not isinstance(payload, dict):
+                raise RegulationInputError('JSON body must be an object')
+            self._json(REGULATION_SERVICE.refresh(payload.get('bbox'), payload.get('force', False)))
+        except RequestBodyTooLarge as exc:
+            self._json({'error': str(exc)}, 413)
+        except (ValueError, RegulationInputError) as exc:
+            self._json({'error': str(exc)}, 400)
 
     def _zips_address_to_bluemap(self):
         try:
@@ -199,7 +252,11 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body)))
         self._cors_headers()
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Browser navigation/cancellation can close a long refresh response.
+            pass
 
     def _json(self, data: dict, code: int = 200):
         body = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -208,6 +265,11 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == '__main__':
     os.chdir(BASE_DIR)
-    httpd = HTTPServer((BIND_HOST, PORT), Handler)
+    httpd = ThreadingHTTPServer((BIND_HOST, PORT), Handler)
+    REGULATION_SERVICE.start_background()
     print(f'[Web] http://{BIND_HOST}:{PORT}/index8.2.html')
-    httpd.serve_forever()
+    try:
+        httpd.serve_forever()
+    finally:
+        REGULATION_SERVICE.stop_background()
+        httpd.server_close()

@@ -1,15 +1,17 @@
 // map3dThree.js — 軽量3Dビュー (Three.js)。Cesium の代替。
 // 座標系: X=東(m), Z=-匁Em), Y=高さ(m)。地面は XZ 平面、E
 import { store } from '../state.js';
-import { simulatePathPoses } from '../core/physics.js';
-import { coordinateSystem, safeDifference, safeUnion, turf } from '../utils/geo.js';
+import { createKinematicPathFollower } from '../core/physics.js';
+import { safeDifference, safeUnion, turf } from '../utils/geo.js';
 import { buildRoadUnion } from '../core/feasibility.js';
 import { normalizeRouteForVehicle } from '../core/trajectoryPlanner.js';
+import { planLocalAvoidance } from '../core/localAvoidance.js';
 import { buildIntersectionWidening } from '../core/intersectionWidening.js';
 import { RUNTIME_CONFIG } from '../config.js';
 import { getMapInstance } from './map2d.js';
 import { buildAutonomyDriveReport } from '../sim/autonomy/behaviorPlanner.js';
 import { createSafetyMonitor, evaluateSafetyInvariants } from '../sim/safetyMonitor.js';
+import { planHybridAStarManeuver } from '../core/hybridAStar.js';
 import { fuseWidthForFeature } from '../core/roadWidthModel.js';
 import {
   buildCollisionSolidSet,
@@ -39,6 +41,7 @@ let truckEdges = null;
 let truckPaintMeshes = [];
 let truckEdgeMeshes = [];
 let truckFrontWheels = []; // steering pivots for front axle wheels
+let truckRollingWheels = [];
 let truckTrailObjects = [];
 let truckTrailLastM = -Infinity;
 let truckTrailLastPos = null;
@@ -72,6 +75,8 @@ let drivePoses = [];          // 物理モデルの時系列 pose
 let driveTimeS = 0;
 let driveDurationS = 0;
 let drivePoseMode = false;
+let driveFollower3D = null;
+let driveFollowerDone3D = false;
 let drivePlaybackRouteSource = 'raw';
 let drivePlaybackRouteMetrics = null;
 let autonomyReport3D = null;
@@ -85,6 +90,33 @@ let recoveryPlaybackCount3D = 0;
 let recoveryBypassUntilM = 0;
 let recoveryOffsetHoldM = 0;
 let recoveryOffsetHoldUntilM = 0;
+// 切り返し(K-turn)プランのデバッグ記録。棄却したプランも含め全機動を残す。
+// probe(run_switchback_probe.js)が window.index3DGetRecoveryDebug() で読む契約。
+let recoveryDebug3D = { maneuvers: [], count: 0 };
+// スタック検出用（simTime基準）。実速度がほぼ0のまま前進しない時間を積算する。
+let stallTimerS = 0;
+// 検証済み前方掃引(verifyAheadBlocked)のキャッシュ。5m刻みステーションで結果を保持し毎フレーム再掃引しない。
+let verifyAheadCache3D = { bucket: null, blocked: false };
+// 1回の再生で採用(accepted)したK-turnの回数。病的な切り返しループの最終安全網に使う。
+let switchbackAcceptedCount3D = 0;
+
+// 切り返し機動を1件記録する（採用/棄却の別なく残す）。
+function recordManeuverDebug3D(entry) {
+  if (!recoveryDebug3D || !Array.isArray(recoveryDebug3D.maneuvers)) {
+    recoveryDebug3D = { maneuvers: [], count: 0 };
+  }
+  recoveryDebug3D.maneuvers.push(entry);
+  recoveryDebug3D.count = recoveryDebug3D.maneuvers.length;
+}
+
+if (typeof window !== 'undefined') {
+  // probe契約: { maneuvers: [...], count }。各要素は source/sM/lengthM/
+  // headingSweepDeg/gearChanges/poseCount/accepted/rejectReason を持つ。
+  window.index3DGetRecoveryDebug = () => ({
+    maneuvers: (recoveryDebug3D?.maneuvers || []).map((m) => ({ ...m })),
+    count: recoveryDebug3D?.count || 0
+  });
+}
 let truckRenderHeading = 0;
 let lastTruckPos = null;
 let playing = false;
@@ -1121,6 +1153,50 @@ function buildPlaybackRouteForVehicle(route, state) {
         outputPoints: normalized.length,
         pointGrowth: roundMetric(normalized.length / Math.max(1, route.length), 2)
       };
+
+      // 局所回避プランナ（#46）: 正規化中心線に、道端障害物と広い急コーナー向けの
+      // 横オフセットを重ねる。判定・再生と同一の road surface / 障害物ソリッドを共有する。
+      // 失敗・例外時は正規化経路のまま（フェイルセーフ）。
+      try {
+        const roadSurface = getRoadSurfaceGeo(state);
+        const clippedBuildings = clipBuildingsByRoadSurface(
+          state?.buildingsGeoJSON || [],
+          roadSurface,
+          { marginM: 0.3 }
+        );
+        const solidSet = buildCollisionSolidSet({
+          buildings: clippedBuildings,
+          maskEdits: state?.maskEdits || {}
+        });
+        const obstacles = (solidSet.lateralSolids || [])
+          .map((s) => s.feature)
+          .filter((f) => f?.geometry);
+        const avo = planLocalAvoidance({
+          routeLL: normalized,
+          roadSurface,
+          obstacles,
+          vehicleConfig: state?.vehicleConfig || {},
+          turf
+        });
+        if (avo && Array.isArray(avo.routeLL) && avo.routeLL.length >= 2 && avo.adjustedCount > 0) {
+          drivePlaybackRouteSource = 'route-normalizer+avoidance';
+          drivePlaybackRouteMetrics = {
+            ...drivePlaybackRouteMetrics,
+            outputPoints: avo.routeLL.length,
+            hotspots: avo.hotspots.length,
+            avoidanceHotspots: avo.hotspots.map((h) => ({ ...h })),
+            adjustedCount: avo.adjustedCount
+          };
+          return avo.routeLL;
+        }
+        if (avo && Array.isArray(avo.hotspots) && avo.hotspots.length) {
+          drivePlaybackRouteMetrics.hotspots = avo.hotspots.length;
+          drivePlaybackRouteMetrics.adjustedCount = 0;
+        }
+      } catch (avoErr) {
+        console.warn('[three3d] local avoidance failed, using normalized route:', avoErr?.message || avoErr);
+      }
+
       return normalized;
     }
   } catch (e) {
@@ -1579,6 +1655,9 @@ export function getCollisionSolidMetrics() {
 
 export function getAutonomyDriveMetrics() {
   const totalM = routeCum.length ? routeCum[routeCum.length - 1] : 0;
+  const liveKinematic = (() => {
+    try { return driveFollower3D?.getState?.() || null; } catch (_e) { return null; }
+  })();
   const liveMode = recoveryPlayback3D
     ? 'RECOVER'
     : (recoveryBypassUntilM > (Number(progressM) || 0) + 0.25
@@ -1621,6 +1700,12 @@ export function getAutonomyDriveMetrics() {
       drivePoseMode,
       drivePlaybackRouteSource,
       drivePlaybackRouteMetrics: drivePlaybackRouteMetrics ? { ...drivePlaybackRouteMetrics } : null,
+      kinematic: liveKinematic ? {
+        speedMS: roundMetric(liveKinematic.speedMS, 3),
+        steeringAngleRad: roundMetric(liveKinematic.steeringAngle, 4),
+        lateralErrorM: roundMetric(liveKinematic.lateralErrorM, 3),
+        gear: Number(liveKinematic.gear) || 0
+      } : null,
       safety: getSafetyMonitorMetrics(),
       recoveryBypassUntilM: Math.round((Number(recoveryBypassUntilM) || 0) * 10) / 10,
       recoveryOffsetHoldM: Math.round((Number(recoveryOffsetHoldM) || 0) * 100) / 100
@@ -1640,6 +1725,17 @@ const HUD_MODE_STYLE = {
   MONITORED_CRAWL: { label: '監視徐行', color: '#f59e0b' },
   RECOVER: { label: '復旧走行', color: '#a78bfa' },
   STOP: { label: '停止', color: '#ef4444' }
+};
+
+// MRM停止の理由コード→和名。HUDのheadline補足に使う（未登録は '進入不可'）。
+const MRM_REASON_LABEL = {
+  safety_invariant_violation: '安全違反',
+  switchback_infeasible: '切り返し不能',
+  maneuver_infeasible: '通行不能(検証済)',
+  verified_blocker_ahead: '前方障害物(検証済)',
+  maneuver_loop_suspected: '切り返し反復検出',
+  planner_stop_unresolved: '進入不可',
+  stalled_no_progress: '停滞検出'
 };
 
 function ensureAutonomyHud3D() {
@@ -1674,7 +1770,7 @@ function updateAutonomyHud3D(sample, limit, speedMS) {
   const st = HUD_MODE_STYLE[mode] || HUD_MODE_STYLE.CRUISE;
 
   let headline;
-  if (mrm) headline = `<span style="color:#ef4444;font-weight:700">■ MRM停止</span> <span style="opacity:.8">${mrm.reason === 'safety_invariant_violation' ? '安全違反' : '進入不可'}</span>`;
+  if (mrm) headline = `<span style="color:#ef4444;font-weight:700">■ MRM停止</span> <span style="opacity:.8">${MRM_REASON_LABEL[mrm.reason] || '進入不可'}</span>`;
   else if (isSwitchback) headline = '<span style="color:#a78bfa;font-weight:700">↩ 切り返し中</span> <span style="opacity:.8">K-turn</span>';
   else if (isRecovery) headline = '<span style="color:#a78bfa;font-weight:700">↩ 復旧走行中</span>';
   else headline = `<span style="color:${st.color};font-weight:700">● ${st.label}</span>`;
@@ -1847,11 +1943,16 @@ function runSafetyMonitorTick({ pos, heading, state, speedMS, sample, limit, sim
   const hardForwardClearanceM = limit?.mode === 'STOP'
     ? (sample?.forwardClearanceM ?? null)
     : null;
+  // K-turn/復旧などスクリプト機動中は設計上の帯外スイングを許容する
+  // （接触検出は生きている）。通常走行のみ持続的な大幅逸脱をMRMへ昇格させる。
+  const surfaceTolerances = recoveryPlayback3D
+    ? { ...INDEX3D_ROAD_SURFACE_TOLERANCE, roadOutsideHardSustainS: 9999 }
+    : INDEX3D_ROAD_SURFACE_TOLERANCE;
   const result = safetyMonitor3D.push({
     turf,
     footprint,
     roadSurface: inEndpointGrace ? null : safetyRoadSurfaceGeo,
-    tolerances: INDEX3D_ROAD_SURFACE_TOLERANCE,
+    tolerances: surfaceTolerances,
     speedMS,
     allowedMS: limit?.allowedMS,
     curveLimitMS,
@@ -1938,6 +2039,9 @@ function addAutonomySensorPreview(report) {
 
 function addRecoveryTrajectoryPreview(report) {
   clearMeshesByTag('recoveryTrajectory');
+  // 旧 reverse/replan プレビューは、実再生では使わない横オフセット補間を表示してしまう。
+  // 車両物理に反する見え方を避けるため、明示デバッグ時だけ表示する。
+  if (!(typeof window !== 'undefined' && window.LEGACY_RECOVERY_PREVIEW === true)) return 0;
   if (!THREE || !scene || !report?.recoveryEvents?.length || routeXZ.length < 2) return 0;
   const okMat = new THREE.LineBasicMaterial({ color: 0xa78bfa, transparent: true, opacity: 0.9 });
   const failMat = new THREE.LineBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.8 });
@@ -2318,6 +2422,7 @@ function buildTruck(vehicleConfig, cargo) {
   truckPaintMeshes = [];
   truckEdgeMeshes = [];
   truckFrontWheels = [];
+  truckRollingWheels = [];
 
   {
   const wb = Number(vehicleConfig?.wheelBase) || 4.0;
@@ -2350,14 +2455,15 @@ function buildTruck(vehicleConfig, cargo) {
   const cabBaseY = Math.max(0.34, wheelY - wheelRadius * 0.15);
   const cabH = Math.max(1.65, Math.min(2.65, vh - cabBaseY + 0.08));
 
-  const bodyMat = new THREE.MeshLambertMaterial({ color: 0x0891b2, transparent: true, opacity: 0.76 });
-  const cabMat = new THREE.MeshLambertMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.88 });
-  const frameMat = new THREE.MeshLambertMaterial({ color: 0x0f172a, transparent: true, opacity: 0.92 });
-  const railMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.95 });
+  const LitMaterial = THREE.MeshStandardMaterial || THREE.MeshLambertMaterial;
+  const bodyMat = new LitMaterial({ color: 0x0891b2, roughness: 0.48, metalness: 0.12 });
+  const cabMat = new LitMaterial({ color: 0x38bdf8, roughness: 0.38, metalness: 0.08 });
+  const frameMat = new LitMaterial({ color: 0x0f172a, roughness: 0.72, metalness: 0.38 });
+  const railMat = new LitMaterial({ color: 0x94a3b8, roughness: 0.34, metalness: 0.56 });
   const glassMat = new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.78 });
   const lightMat = new THREE.MeshBasicMaterial({ color: 0xfacc15 });
-  const tireMat = new THREE.MeshLambertMaterial({ color: 0x111827 });
-  const hubMat = new THREE.MeshLambertMaterial({ color: 0xcbd5e1 });
+  const tireMat = new LitMaterial({ color: 0x111827, roughness: 0.9, metalness: 0 });
+  const hubMat = new LitMaterial({ color: 0xcbd5e1, roughness: 0.28, metalness: 0.72 });
 
   const addBox = (name, w, h, l, x, y, z, mat, paint = false, edgeColor = 0x67e8f9) => {
     const geo = new THREE.BoxGeometry(w, h, l);
@@ -2413,15 +2519,21 @@ function buildTruck(vehicleConfig, cargo) {
       const wheelX = side * (width / 2 + wheelDepth * 0.28);
       const wheel = new THREE.Mesh(wheelGeo, tireMat);
       wheel.rotation.z = Math.PI / 2;
+      wheel.userData.wheelRadiusM = wheelRadius;
       wheel.userData.tag = 'truck';
       const hub = new THREE.Mesh(hubGeo, hubMat);
       hub.rotation.z = Math.PI / 2;
+      hub.userData.wheelRadiusM = wheelRadius;
       hub.userData.tag = 'truck';
+      truckRollingWheels.push(wheel, hub);
       if (isFrontAxle) {
         // 前輪は操舵ピボット(Group)に入れ、pivot.rotation.y でステア角を表現する。
         const pivot = new THREE.Group();
         pivot.position.set(wheelX, wheelY, z);
         pivot.userData.tag = 'truck';
+        pivot.userData.side = side;
+        pivot.userData.wheelBaseM = wb;
+        pivot.userData.trackWidthM = width;
         wheel.position.set(0, 0, 0);
         hub.position.set(0, 0, 0);
         pivot.add(wheel);
@@ -2573,7 +2685,7 @@ function setTruckDanger(danger) {
   for (const mesh of paint) {
     if (!mesh?.material) continue;
     mesh.material.color.setHex(danger ? 0xef4444 : (mesh.name === 'truck-cab' ? 0x38bdf8 : 0x0891b2));
-    mesh.material.opacity = danger ? 0.76 : (mesh.name === 'truck-cab' ? 0.88 : 0.76);
+    mesh.material.opacity = 1;
   }
   const edges = truckEdgeMeshes.length ? truckEdgeMeshes : (truckEdges ? [truckEdges] : []);
   for (const edge of edges) {
@@ -2587,7 +2699,28 @@ function setTruckSteer(angleRad) {
   if (!Number.isFinite(a)) return;
   const clamped = Math.max(-0.85, Math.min(0.85, a));
   for (const pivot of truckFrontWheels) {
-    if (pivot) pivot.rotation.y = clamped;
+    if (!pivot) continue;
+    const wb = Math.max(0.5, Number(pivot.userData?.wheelBaseM) || 4);
+    const track = Math.max(0.8, Number(pivot.userData?.trackWidthM) || 2.3);
+    const absSteer = Math.abs(clamped);
+    if (absSteer < 1e-4) {
+      pivot.rotation.y = 0;
+      continue;
+    }
+    const centerRadius = wb / Math.max(1e-4, Math.tan(absSteer));
+    const innerSide = clamped > 0 ? -1 : 1;
+    const isInner = Number(pivot.userData?.side) === innerSide;
+    const wheelRadius = Math.max(0.2, centerRadius + (isInner ? -track * 0.5 : track * 0.5));
+    pivot.rotation.y = Math.sign(clamped) * Math.atan(wb / wheelRadius);
+  }
+}
+
+function rollTruckWheels(distanceM) {
+  const d = Number(distanceM);
+  if (!Number.isFinite(d) || Math.abs(d) < 1e-6) return;
+  for (const wheel of truckRollingWheels) {
+    const radius = Math.max(0.1, Number(wheel?.userData?.wheelRadiusM) || 0.45);
+    wheel?.rotateY?.(-d / radius);
   }
 }
 
@@ -2823,69 +2956,11 @@ function markHandledSwitchbackZone(key, sM, resumeStationM) {
   }
 }
 
-function findPlayableRecoveryEvent(sample, sM) {
-  if (sample?.mode !== 'STOP') return null;
-  const events = autonomyReport3D?.recoveryEvents || [];
-  for (const ev of events) {
-    if (!ev?.resolved || !(Number(ev.reverseDistM) > 0)) continue;
-    const key = recoveryEventKey(ev);
-    if (recoveryHandledKeys3D.has(key)) continue;
-    const evS = Number(ev.sM);
-    if (!Number.isFinite(evS)) continue;
-    const sampleS = Number(sample.sM) || Number(sM) || 0;
-    if (Math.abs(evS - sampleS) <= 5 || Math.abs(evS - (Number(sM) || 0)) <= 5) return ev;
-  }
-  return null;
-}
-
-function beginRecoveryPlayback(ev) {
-  const sM = Number(ev?.sM);
-  if (!Number.isFinite(sM) || routeXZ.length < 2) return false;
-  const heading = _routeHeadingAt(sM);
-  const stop = _sampleRouteAt(sM);
-  const reverseM = Math.max(1.5, Number(ev.reverseDistM) || 4);
-  const transitionLenM = Math.max(0, Number(ev.transitionLenM) || 0);
-  const lateralM = Number(ev.lateralOffsetM) || 0;
-  const reverse = {
-    x: stop.x - Math.sin(heading) * reverseM,
-    z: stop.z + Math.cos(heading) * reverseM
-  };
-  const shifted = offsetXZLaterally(reverse, heading, lateralM);
-  // 1b(b): 復旧終了点(resume)を、引継ぎ後の通常走行が再開する地点・向きと一致させて位置飛びを防ぐ。
-  const resumeForwardM = Math.max(6, reverseM + 3, transitionLenM);
-  const resumeStationM = sM + resumeForwardM;
-  const resumeHeading = _routeHeadingAt(resumeStationM);
-  const resumeBase = _sampleRouteAt(resumeStationM);
-  const resume = offsetXZLaterally(resumeBase, resumeHeading, lateralM);
-  recoveryBypassUntilM = Math.max(recoveryBypassUntilM, resumeStationM + 5);
-  recoveryHandledKeys3D.add(recoveryEventKey(ev));
-  recoveryPlaybackCount3D += 1;
-  recoveryPlayback3D = {
-    sM,
-    heading,
-    reverseM,
-    transitionLenM,
-    lateralM,
-    resumeForwardM,
-    resumeStationM,
-    stop,
-    reverse,
-    shifted,
-    resume,
-    t: 0,
-    reverseTime: Math.max(0.5, reverseM / 3.0),
-    shiftTime: Math.max(0.8, Math.abs(lateralM) / 0.9),
-    resumeTime: Math.max(0.7, Math.max(transitionLenM, reverseM + 4) / 5.0)
-  };
-  return true;
-}
-
-function lerpPoint(a, b, t) {
-  return {
-    x: a.x + (b.x - a.x) * t,
-    z: a.z + (b.z - a.z) * t
-  };
-}
+// 旧式の横移動復旧（reverse→横平行移動→復帰の位置lerp）は非物理のため全面廃止した。
+// findPlayableRecoveryEvent / beginRecoveryPlayback / lerpPoint はここにあった呼び出し元
+// 不在のデッドコードで、横方向へ車両をスライドさせる唯一の経路だったため削除済み。
+// 障害物で中心線が通れない場合は、横へ逃げず接触として現れる（判定が正直になる）か、
+// 幾何検証済みのK-turn（前後進＋操舵のポーズ列）でのみ切り返す。
 
 // 最短弧で角度補間（切り返しのヘディング振りに使う）
 function lerpAngleRad(a, b, t) {
@@ -2921,10 +2996,20 @@ function poseClearsSolids3D(pos, headingRad, vc) {
 
 // 自転車モデル1ステップ（xz平面・既存の前進規約 x+=sin(h)·ds, z-=cos(h)·ds）
 function stepBicycleXZ(pose, dsSigned, steerRad, wheelBase) {
-  const h = pose.h + (dsSigned / Math.max(1, wheelBase)) * Math.tan(steerRad);
+  const h0 = pose.h;
+  const dHeading = (dsSigned / Math.max(1, wheelBase)) * Math.tan(steerRad);
+  const h = h0 + dHeading;
+  if (Math.abs(dHeading) < 1e-8) {
+    return {
+      x: pose.x + Math.sin(h0) * dsSigned,
+      z: pose.z - Math.cos(h0) * dsSigned,
+      h
+    };
+  }
+  const radius = dsSigned / dHeading;
   return {
-    x: pose.x + Math.sin(h) * dsSigned,
-    z: pose.z - Math.cos(h) * dsSigned,
+    x: pose.x + radius * (Math.cos(h0) - Math.cos(h)),
+    z: pose.z + radius * (Math.sin(h0) - Math.sin(h)),
     h
   };
 }
@@ -2932,9 +3017,22 @@ function stepBicycleXZ(pose, dsSigned, steerRad, wheelBase) {
 // アーク1本ぶんのポーズ列を生成・検証しながら poses に積む。失敗で false。
 function pushValidatedArc(poses, vc, wheelBase, lengthM, dir, steerRad, stepDs = 0.5) {
   let pose = poses[poses.length - 1];
+  // 停止中に実車相当の操舵レートで次の舵角へ合わせる。前後進の切替も
+  // このゼロ速度区間を必ず通るため、符号だけが瞬時反転することはない。
+  const steerRate = Math.max(0.05, Number(vc?.maxSteeringRateRadS) || 0.45);
+  const steerStep = steerRate * 0.1;
+  let rampSteer = Number(pose.steer) || 0;
+  while (Math.abs(steerRad - rampSteer) > 1e-4) {
+    rampSteer = Math.abs(steerRad - rampSteer) <= steerStep
+      ? steerRad
+      : rampSteer + Math.sign(steerRad - rampSteer) * steerStep;
+    poses.push({ ...pose, rev: dir < 0, steer: rampSteer, holdS: 0.1 });
+    pose = poses[poses.length - 1];
+  }
   const steps = Math.max(1, Math.ceil(lengthM / stepDs));
+  const ds = lengthM / steps;
   for (let i = 0; i < steps; i++) {
-    pose = stepBicycleXZ(pose, dir * stepDs, steerRad, wheelBase);
+    pose = stepBicycleXZ(pose, dir * ds, steerRad, wheelBase);
     if (!poseClearsSolids3D({ x: pose.x, z: pose.z }, pose.h, vc)) return false;
     poses.push({ ...pose, rev: dir < 0, steer: steerRad });
   }
@@ -2962,35 +3060,327 @@ function planKTurnPoses({ startPos, entryHeading, exitHeading, resumePos, vc }) 
             && pushValidatedArc(poses, vc, wb, r, -1, -sigma * steerMax);
         }
         if (!ok) continue;
-        // 整列前進: 残り方位誤差を比例操舵で詰めつつ resume 点へ（最大25m）
+        // 整列前進: 残り方位誤差を比例操舵で詰めつつ resume 点へ。
+        // 幾何がずれると到達条件を満たさずフルロック円を一周する（ピルエット暴走）ため、
+        // 整列フェーズを有界化する: (a)累積前進15m、(b)|err|が3ステップ連続で減少しない、
+        // (c)累積方位変化120°超 のいずれかで打ち切って不成立にする。
         let pose = poses[poses.length - 1];
         let reached = false;
+        let alignDistM = 0;
+        let alignSweepRad = 0;
+        let prevAbsErr = Infinity;
+        let nonDecreasingCount = 0;
+        let lastAlignH = pose.h;
         for (let i = 0; i < 60; i++) {
           let err = exitHeading - pose.h;
           while (err > Math.PI) err -= 2 * Math.PI;
           while (err < -Math.PI) err += 2 * Math.PI;
+          const absErr = Math.abs(err);
+          // (b) 誤差が縮まらない状態が続く＝収束していない → 打ち切り。
+          if (absErr >= prevAbsErr - 1e-4) {
+            if (++nonDecreasingCount >= 3) { ok = false; break; }
+          } else {
+            nonDecreasingCount = 0;
+          }
+          prevAbsErr = absErr;
           const steer = Math.max(-steerMax, Math.min(steerMax, err * 2));
           pose = stepBicycleXZ(pose, 0.5, steer, wb);
           if (!poseClearsSolids3D({ x: pose.x, z: pose.z }, pose.h, vc)) { ok = false; break; }
           poses.push({ ...pose, rev: false, steer });
+          alignDistM += 0.5;
+          let dH = pose.h - lastAlignH;
+          while (dH > Math.PI) dH -= 2 * Math.PI;
+          while (dH < -Math.PI) dH += 2 * Math.PI;
+          alignSweepRad += Math.abs(dH);
+          lastAlignH = pose.h;
+          // (a)/(c) 前進距離・方位掃引の上限を超えたら不成立。
+          if (alignDistM > 15 || alignSweepRad > 120 * Math.PI / 180) { ok = false; break; }
           const dx = resumePos.x - pose.x;
           const dz = resumePos.z - pose.z;
-          if (Math.hypot(dx, dz) <= 1.8 && Math.abs(err) <= 15 * Math.PI / 180) {
-            if (poseClearsSolids3D(resumePos, exitHeading, vc)) {
-              poses.push({ x: resumePos.x, z: resumePos.z, h: exitHeading, rev: false, steer: 0 });
-            }
+          if (Math.hypot(dx, dz) <= 1.2 && absErr <= 10 * Math.PI / 180) {
+            // 経路上の resumePos へ直接追加すると最大1.8mの横テレポートになる。
+            // 到達した実ポーズからオンライン追従器へ引き継いで連続的に収束させる。
             reached = true;
             break;
           }
         }
-        if (ok && reached) return { poses, cycles: n, f, r };
+        if (ok && reached) return { poses, cycles: n, f, r, source: 'arc-template' };
       }
     }
   }
   return null;
 }
 
-function beginCornerSwitchback(sample, vc) {
+// ワールドframeのポーズ列 [{x,z,h,rev,steer}] を約 stepM 間隔へ弧長再サンプルする。
+// advanceRecoveryPlayback が 0.5m 刻み前提のため必須。前後進の切替点(gear change)には
+// 停止ホールド(holdS)を挿入する（実車は停止しないと前後進を切り替えられない）。
+function resampleKTurnWorldPoses(rawPoses, stepM = 0.5) {
+  if (!Array.isArray(rawPoses) || rawPoses.length === 0) return [];
+  const out = [{ x: rawPoses[0].x, z: rawPoses[0].z, h: rawPoses[0].h, rev: !!rawPoses[0].rev, steer: Number(rawPoses[0].steer) || 0 }];
+  let dist = stepM; // 次に打点するまでの残距離
+  for (let i = 1; i < rawPoses.length; i++) {
+    const a = rawPoses[i - 1];
+    const b = rawPoses[i];
+    if ((!!a.rev) !== (!!b.rev)) {
+      // 前後進の切替 = 必ず停止。舵角も合わせるためのホールドポーズを挿入する。
+      out.push({ x: b.x, z: b.z, h: b.h, rev: !!b.rev, steer: Number(b.steer) || 0, holdS: 0.3 });
+      dist = stepM;
+      continue;
+    }
+    const seg = Math.hypot(b.x - a.x, b.z - a.z);
+    if (seg < 1e-6) continue;
+    while (dist <= seg + 1e-9) {
+      const u = dist / seg;
+      out.push({
+        x: a.x + (b.x - a.x) * u,
+        z: a.z + (b.z - a.z) * u,
+        h: lerpAngleRad(a.h, b.h, u),
+        rev: !!b.rev,
+        steer: Number(b.steer) || 0
+      });
+      dist += stepM;
+    }
+    dist -= seg;
+  }
+  // 終端ポーズを確実に含める（goal 位置・向きへ収束させるため）。
+  const last = rawPoses[rawPoses.length - 1];
+  const tail = out[out.length - 1];
+  if (Math.hypot(tail.x - last.x, tail.z - last.z) > 0.05) {
+    out.push({ x: last.x, z: last.z, h: last.h, rev: !!last.rev, steer: Number(last.steer) || 0 });
+  }
+  return out;
+}
+
+// 機動の総経路長・累積方位掃引・前後進切替回数を集計する（ピルエット判定・デバッグ用）。
+function analyzeManeuverPoses(poses) {
+  let lengthM = 0;
+  let sweepRad = 0;
+  let gearChanges = 0;
+  if (!Array.isArray(poses)) return { lengthM, headingSweepDeg: 0, gearChanges };
+  for (let i = 1; i < poses.length; i++) {
+    const a = poses[i - 1];
+    const b = poses[i];
+    lengthM += Math.hypot(b.x - a.x, b.z - a.z);
+    let dH = b.h - a.h;
+    while (dH > Math.PI) dH -= 2 * Math.PI;
+    while (dH < -Math.PI) dH += 2 * Math.PI;
+    sweepRad += Math.abs(dH);
+    if ((!!a.rev) !== (!!b.rev)) gearChanges++;
+  }
+  return { lengthM, headingSweepDeg: sweepRad * 180 / Math.PI, gearChanges };
+}
+
+// Hybrid A* を切り返しプランナとして実行する。成功時はワールドframeへ逆変換し
+// 0.5m間隔へ再サンプルしたポーズ列 {poses, source, metrics} を返す。失敗で null。
+// 座標規約は followerリセットと同一: 物理frame (x, y=-z, theta=π/2-h)、逆変換 h=π/2-theta, z=-y。
+function planSwitchbackHybrid({ startPos, entryHeading, exitHeading, resumePos, vc }) {
+  const fp = getVehicleFootprintConfig(vc || {}, { defaultWheelBase: 3.4, defaultVehicleWidth: 2.5 });
+  const wheelBaseM = Math.max(1.5, Number(fp.wheelBase) || 3.4);
+  const maxSteerRad = Math.min(40, Math.max(20, Number(vc?.maxSteeringAngle) || 38)) * Math.PI / 180;
+  const start = { x: startPos.x, y: -startPos.z, theta: Math.PI / 2 - entryHeading };
+  const goal = { x: resumePos.x, y: -resumePos.z, theta: Math.PI / 2 - exitHeading };
+  const pad = 25;
+  const bounds = {
+    minX: Math.min(start.x, goal.x) - pad,
+    maxX: Math.max(start.x, goal.x) + pad,
+    minY: Math.min(start.y, goal.y) - pad,
+    maxY: Math.max(start.y, goal.y) + pad
+  };
+  // isPoseValid: 物理frame → ワールドframe へ戻して障害物クリアランスで妥当性を見る。
+  // advisoryな道路帯逸脱は poseClearsSolids3D では ok に影響しない（単一ポーズでは接触のみ棄却）ため、
+  // 数千回呼ばれる内側ループでは高コストな turf.difference を避け、接触判定のみ行う（判定結果は等価）。
+  const isPoseValid = (p) => {
+    const h = Math.PI / 2 - p.theta;
+    return !checkTruckSolidCollision({ x: p.x, z: -p.y }, h, { vehicleConfig: vc || {} });
+  };
+  let result = null;
+  try {
+    result = planHybridAStarManeuver({
+      start,
+      goal,
+      wheelBaseM,
+      maxSteerRad,
+      isPoseValid,
+      bounds,
+      options: {
+        stepM: 0.8,
+        integrationStepM: 0.4,
+        steeringBinCount: 5,
+        goalPositionToleranceM: 1.2,
+        goalHeadingToleranceRad: 12 * Math.PI / 180,
+        reverseCost: 0.4,
+        gearSwitchCost: 8,
+        maxExpansions: 6000,
+        maxNodes: 12000
+      }
+    });
+  } catch (_e) {
+    return null;
+  }
+  if (!result || !Array.isArray(result.poses) || result.poses.length < 2) return null;
+  // 物理frame → ワールドframe。操舵角は座標反射(y=-z)で符号が反転する。
+  const worldPts = result.poses.map((p) => ({
+    x: p.x,
+    z: -p.y,
+    h: Math.PI / 2 - p.theta,
+    rev: !!p.reverse,
+    steer: -(Number(p.steeringAngle) || 0)
+  }));
+  const poses = resampleKTurnWorldPoses(worldPts, 0.5);
+  if (poses.length < 2) return null;
+  return { poses, source: 'hybrid-astar', metrics: result.metrics };
+}
+
+// 切り返しプランを決定する: まず Hybrid A*（検証済み大域探索）、失敗時にアーク・テンプレート。
+// どちらのプラン由来でも採用前にピルエット拒否ガードを掛け、棄却分も含め全機動を記録する。
+function planCornerManeuver({ startPos, entryHeading, exitHeading, resumePos, vc, sM }) {
+  const round1 = (v) => Math.round((Number(v) || 0) * 10) / 10;
+  const candidates = [
+    { source: 'hybrid-astar', build: () => planSwitchbackHybrid({ startPos, entryHeading, exitHeading, resumePos, vc }) },
+    { source: 'arc-template', build: () => planKTurnPoses({ startPos, entryHeading, exitHeading, resumePos, vc }) }
+  ];
+  for (const c of candidates) {
+    let plan = null;
+    try { plan = c.build(); } catch (_e) { plan = null; }
+    if (!plan || !Array.isArray(plan.poses) || plan.poses.length < 2) {
+      recordManeuverDebug3D({
+        source: c.source, sM: Math.round(sM), lengthM: 0, headingSweepDeg: 0,
+        gearChanges: 0, poseCount: plan?.poses?.length || 0, accepted: false, rejectReason: 'infeasible'
+      });
+      continue;
+    }
+    const stats = analyzeManeuverPoses(plan.poses);
+    // ピルエット拒否ガード（最終安全網）: 累積方位変化>270° または 総経路長>45m を棄却。
+    let rejectReason = null;
+    if (stats.headingSweepDeg > 270) rejectReason = 'sweep';
+    else if (stats.lengthM > 45) rejectReason = 'length';
+    recordManeuverDebug3D({
+      source: c.source,
+      sM: Math.round(sM),
+      lengthM: round1(stats.lengthM),
+      headingSweepDeg: Math.round(stats.headingSweepDeg),
+      gearChanges: stats.gearChanges,
+      poseCount: plan.poses.length,
+      accepted: !rejectReason,
+      rejectReason
+    });
+    if (!rejectReason) return { plan, source: c.source, stats };
+    console.info('[switchback] plan rejected (pirouette guard)', {
+      sM: Math.round(sM), source: c.source, rejectReason,
+      sweepDeg: Math.round(stats.headingSweepDeg), lengthM: round1(stats.lengthM)
+    });
+  }
+  return null;
+}
+
+// 前進通過可否ゲート（切り返し要否判定）。
+// 設計指示: 「切り返しなどをするとき本当はいらないなら入らないという判断をしてもいい」
+// = 前進のまま曲がれるコーナーではK-turnを実行しない。K-turnは幾何的に本当に必要な最終手段。
+// s = max(0, sM-3) から resumeStationM+2 まで再生経路(_sampleRouteAt/_routeHeadingAt)を
+// フットプリントで 0.75m 刻みに掃引し、以下のどちらかで「前進不可」と判定する:
+//   ① 1ポーズでも実体接触（poseClearsSolids3D。道路帯逸脱はadvisoryなのでokに効かず接触のみ棄却）。
+//   ② Safety Monitor と同じ「outsideRatio>0.5 かつ 面積>8m²」の大幅逸脱が連続3.5m以上続く。
+//      （コーナーは~1.6m/sの徐行なので3.5m≈2.2s。持続逸脱昇格MRM(2.0s)を踏むため前進不可扱いにする。
+//        単発・短区間の逸脱はadvisory相当で許容する。）
+// どちらにも該当しなければ feasible:true（監視徐行で前進通過）。
+// 面積比は Safety Monitor(roadOutsideMetrics)と同一材料: truckFootprintFeatureForSafety +
+// turf.area/turf.difference。turfが無い/失敗時は②のチェックをスキップする。
+// 例外は try/catch で握り「前進不可扱い」（=従来のK-turn計画へ）にフェイルセーフする。
+function forwardPassFeasible(vc, sM, resumeStationM) {
+  const startS = Math.max(0, (Number(sM) || 0) - 3);
+  const endS = (Number(resumeStationM) || Number(sM) || 0) + 2;
+  const STEP_M = 0.75;
+  const HARD_RATIO = 0.5;   // Safety Monitor の持続逸脱しきい値と一致
+  const HARD_AREA_M2 = 8.0; // 同上
+  const SUSTAIN_M = 3.5;    // ~1.6m/sで約2.2s ≒ 持続昇格MRM(2.0s)超
+  let poseCount = 0;
+  let headingSweepDeg = 0;
+  let prevHeading = null;
+  let excursionStartS = null; // 大幅逸脱が連続し始めた station
+  const lengthM = Math.max(0, endS - startS);
+  const canMeasureExcursion = !!safetyRoadSurfaceGeo && !!turf
+    && typeof turf.area === 'function' && typeof turf.difference === 'function';
+  try {
+    for (let s = startS; s <= endS + 1e-6; s += STEP_M) {
+      const pos = _sampleRouteAt(s);
+      const heading = _routeHeadingAt(s);
+      poseCount += 1;
+      if (prevHeading !== null) {
+        let dh = Math.abs(heading - prevHeading);
+        while (dh > Math.PI) dh = Math.abs(dh - 2 * Math.PI);
+        headingSweepDeg += dh * 180 / Math.PI;
+      }
+      prevHeading = heading;
+      // ① 接触チェック（advisoryな帯逸脱はokに影響せず、接触のみで棄却）
+      if (!poseClearsSolids3D(pos, heading, vc)) {
+        return { feasible: false, reason: 'contact', poseCount, headingSweepDeg, lengthM };
+      }
+      // ② 持続的な大幅逸脱チェック（Safety Monitor と同一の面積比計算）
+      if (canMeasureExcursion) {
+        const footprint = truckFootprintFeatureForSafety(pos, heading, vc || {});
+        if (footprint) {
+          const fpArea = Number(turf.area(footprint)) || 0;
+          if (fpArea > 0) {
+            let within = false;
+            try {
+              within = typeof turf.booleanWithin === 'function'
+                && turf.booleanWithin(footprint, safetyRoadSurfaceGeo);
+            } catch (_e) { within = false; }
+            let outsideArea = 0;
+            if (!within) {
+              const outside = turf.difference(footprint, safetyRoadSurfaceGeo);
+              outsideArea = outside ? (Number(turf.area(outside)) || 0) : 0;
+            }
+            const outsideRatio = fpArea > 0 ? outsideArea / fpArea : 0;
+            const gross = outsideRatio > HARD_RATIO && outsideArea > HARD_AREA_M2;
+            if (gross) {
+              if (excursionStartS === null) excursionStartS = s;
+              if (s - excursionStartS >= SUSTAIN_M) {
+                return { feasible: false, reason: 'sustained_excursion', poseCount, headingSweepDeg, lengthM };
+              }
+            } else {
+              excursionStartS = null; // 連続が途切れたらリセット（単発・短区間は許容）
+            }
+          }
+        }
+      }
+    }
+  } catch (_err) {
+    // turf/幾何の例外はフェイルセーフ: 前進不可扱い（=従来どおりK-turn計画へ倒す）
+    return { feasible: false, reason: 'contact', poseCount, headingSweepDeg, lengthM };
+  }
+  return { feasible: true, poseCount, headingSweepDeg, lengthM };
+}
+
+// 直線区間の「検証済みブロッカー」判定。現在位置から前方 ~VERIFY_AHEAD_RANGE_M を
+// 再生経路(_sampleRouteAt/_routeHeadingAt)に沿って forwardPassFeasible と同じ
+// フットプリント掃引(0.75m刻み)で検査し、実体接触(poseClearsSolids3D=false)が
+// 1ポーズでもあれば true を返す。予測STOPと違い「本当に前が塞がっている」ことの確認。
+// 5m刻みのステーションでキャッシュし、毎フレームの再掃引を避ける（(44)偽STOP対策と両立）。
+// 例外は「検証できない」→ false（＝偽停止を作らず徐行継続）にフェイルセーフする。
+const VERIFY_AHEAD_RANGE_M = 15;
+function verifyAheadBlocked(atProgressM, vc) {
+  const s0 = Math.max(0, Number(atProgressM) || 0);
+  const bucket = Math.floor(s0 / 5);
+  if (verifyAheadCache3D.bucket === bucket) return verifyAheadCache3D.blocked;
+  const total = routeCum.length ? routeCum[routeCum.length - 1] : 0;
+  const endS = total > 0 ? Math.min(total, s0 + VERIFY_AHEAD_RANGE_M) : s0 + VERIFY_AHEAD_RANGE_M;
+  const STEP_M = 0.75;
+  let blocked = false;
+  try {
+    for (let s = s0; s <= endS + 1e-6; s += STEP_M) {
+      const pos = _sampleRouteAt(s);
+      const heading = _routeHeadingAt(s);
+      if (!poseClearsSolids3D(pos, heading, vc)) { blocked = true; break; }
+    }
+  } catch (_e) {
+    blocked = false; // 幾何/turfの例外は検証不能扱い → 徐行継続（偽停止を作らない）
+  }
+  verifyAheadCache3D = { bucket, blocked };
+  return blocked;
+}
+
+function beginCornerSwitchback(sample, vc, livePose = null) {
   const sM = Number(sample?.sM);
   if (!Number.isFinite(sM)) return false;
   const key = `sb:${Math.round(sM / 10)}`; // 同一コーナー(サンプル間隔3m)の多重発火を防ぐ
@@ -2998,7 +3388,9 @@ function beginCornerSwitchback(sample, vc) {
   const fp = getVehicleFootprintConfig(vc || {}, { defaultWheelBase: 3.4, defaultVehicleWidth: 2.5 });
   const vehicleLen = Math.max(4,
     (Number(fp.wheelBase) || 3.4) + (Number(fp.frontOverhang) || 1) + (Number(fp.rearOverhang) || 1));
-  const entryHeading = _routeHeadingAt(Math.max(0, sM - 3));
+  const entryHeading = Number.isFinite(Number(livePose?.heading))
+    ? Number(livePose.heading)
+    : _routeHeadingAt(Math.max(0, sM - 3));
   // 復帰点は「コーナーの曲がりが終わる地点」まで動的に延ばす（複合ベンド対応）
   let resumeForwardM = Math.max(6, vehicleLen * 0.9);
   for (let d = resumeForwardM; d <= 22; d += 2) {
@@ -3011,19 +3403,97 @@ function beginCornerSwitchback(sample, vc) {
   }
   const resumeStationM = sM + resumeForwardM;
   const exitHeading = _routeHeadingAt(resumeStationM);
-  const startPos = _sampleRouteAt(Math.max(0, sM - 1.5));
+  const startPos = Number.isFinite(Number(livePose?.pos?.x)) && Number.isFinite(Number(livePose?.pos?.z))
+    ? { x: Number(livePose.pos.x), z: Number(livePose.pos.z) }
+    : _sampleRouteAt(Math.max(0, sM - 1.5));
   const resumePos = _sampleRouteAt(resumeStationM);
 
   markHandledSwitchbackZone(key, sM, resumeStationM);
-  const plan = planKTurnPoses({ startPos, entryHeading, exitHeading, resumePos, vc });
-  if (!plan) {
-    // 建物/障害物に当たらない切り返し軌道が見つからない場合でも即MRMにはしない。
-    // planner側は swingSoftStop で徐行係数を掛けているため、そのまま監視徐行で
-    // アーク経路を進む（本当に通れないコーナーなら Safety Monitor の接触検出が
-    // 正直な位置でMRMを出す）。ゾーンはhandled済みなので多重試行はしない。
-    console.info('[switchback] infeasible plan -> continue in monitored crawl', { sM: Math.round(sM) });
+
+  // 前進通過可否ゲート: 本当に前進で曲がれるコーナーではK-turnに入らない（設計指示）。
+  // plannerの switchbackRecommended は保守的（スカラー幅+スイングのヒューリスティック）なため、
+  // 幅推定が細めなだけで実際は前進で通れるコーナーでもここまで来る。掃引して不要なら弾く。
+  const fwd = forwardPassFeasible(vc, sM, resumeStationM);
+  const fwdSweep = Math.round((Number(fwd.headingSweepDeg) || 0) * 10) / 10;
+  const fwdLen = Math.round((Number(fwd.lengthM) || 0) * 10) / 10;
+  const fwdPoseCount = Number(fwd.poseCount) || 0;
+  if (fwd.feasible) {
+    // 監査用に非acceptedレコードを積む（probeはacceptedのみ検査するので互換）。
+    recordManeuverDebug3D({
+      source: 'forward-pass-check',
+      sM: Math.round(sM),
+      lengthM: fwdLen,
+      headingSweepDeg: fwdSweep,
+      gearChanges: 0,
+      poseCount: fwdPoseCount,
+      accepted: false,
+      rejectReason: 'not_needed'
+    });
+    console.info('[switchback] forward pass feasible -> skip maneuver', { sM: Math.round(sM) });
+    // ゾーンは markHandledSwitchbackZone 済みなので再評価されない。監視徐行で通す。
     return false;
   }
+  // 前進不可: 不可理由を監査可能に記録してから従来どおりK-turn計画へ。
+  recordManeuverDebug3D({
+    source: 'forward-pass-check',
+    sM: Math.round(sM),
+    lengthM: fwdLen,
+    headingSweepDeg: fwdSweep,
+    gearChanges: 0,
+    poseCount: fwdPoseCount,
+    accepted: false,
+    rejectReason: fwd.reason === 'contact' ? 'forward_blocked_contact' : 'forward_blocked_excursion'
+  });
+
+  // 主修正: Hybrid A* を優先し、失敗時のみアーク・テンプレートへフォールバック。
+  // ピルエット拒否ガードは planCornerManeuver 内で全プランに一元適用する。
+  const chosen = planCornerManeuver({ startPos, entryHeading, exitHeading, resumePos, vc, sM });
+  if (!chosen) {
+    // 前進不可（接触/持続逸脱）で、かつ妥当なK-turn軌道も無い（infeasible/ピルエット棄却）。
+    // 設計指示「通れないなら止まれ」に従い、壁へ這わず・監視徐行で突っ込まず、
+    // 発火時点（＝コーナー手前の自然な位置）で理由付きの安全停止をする。
+    recordManeuverDebug3D({
+      source: 'decision',
+      sM: Math.round(sM),
+      lengthM: fwdLen,
+      headingSweepDeg: fwdSweep,
+      gearChanges: 0,
+      poseCount: fwdPoseCount,
+      accepted: false,
+      rejectReason: 'maneuver_infeasible'
+    });
+    console.info('[switchback] infeasible/rejected plan -> MRM stop (maneuver_infeasible)', { sM: Math.round(sM) });
+    triggerMrmStop3D('maneuver_infeasible', {
+      sM: Math.round(sM),
+      forwardBlockReason: fwd.reason || null,
+      progressM: Math.round((Number(progressM) || 0) * 10) / 10
+    });
+    return false;
+  }
+  // 病的ループの最終安全網: 1回の再生で採用(accepted)したK-turnが6回を超えたら止める。
+  switchbackAcceptedCount3D += 1;
+  if (switchbackAcceptedCount3D > 6) {
+    recordManeuverDebug3D({
+      source: 'decision',
+      sM: Math.round(sM),
+      lengthM: 0,
+      headingSweepDeg: 0,
+      gearChanges: 0,
+      poseCount: 0,
+      accepted: false,
+      rejectReason: 'maneuver_loop_suspected'
+    });
+    console.warn('[switchback] accepted K-turn count exceeded -> MRM stop (maneuver_loop_suspected)', {
+      sM: Math.round(sM), acceptedCount: switchbackAcceptedCount3D
+    });
+    triggerMrmStop3D('maneuver_loop_suspected', {
+      sM: Math.round(sM),
+      acceptedCount: switchbackAcceptedCount3D,
+      progressM: Math.round((Number(progressM) || 0) * 10) / 10
+    });
+    return false;
+  }
+  const plan = chosen.plan;
   recoveryBypassUntilM = Math.max(recoveryBypassUntilM, resumeStationM + 5);
   recoveryPlaybackCount3D += 1;
   recoveryPlayback3D = {
@@ -3037,7 +3507,9 @@ function beginCornerSwitchback(sample, vc) {
     lateralM: 0,
     resumeForwardM,
     resumeStationM,
-    resume: resumePos,
+    // K-turn最終の実ポーズを再生終端にする。経路上の復帰点はprogressだけに使う。
+    resume: { x: plan.poses[plan.poses.length - 1].x, z: plan.poses[plan.poses.length - 1].z },
+    routeResume: resumePos,
     reverseM: 0,
     transitionLenM: 0,
     stop: startPos,
@@ -3047,8 +3519,12 @@ function beginCornerSwitchback(sample, vc) {
     shiftTime: 0,
     resumeTime: 0
   };
-  console.info('[switchback] K-turn v2 start', {
-    sM: Math.round(sM), cycles: plan.cycles, f: plan.f, r: plan.r, poses: plan.poses.length
+  console.info('[switchback] K-turn start', {
+    sM: Math.round(sM), source: chosen.source,
+    lengthM: Math.round((chosen.stats?.lengthM || 0) * 10) / 10,
+    sweepDeg: Math.round(chosen.stats?.headingSweepDeg || 0),
+    gearChanges: chosen.stats?.gearChanges || 0,
+    poses: plan.poses.length
   });
   return true;
 }
@@ -3080,8 +3556,33 @@ function advanceRecoveryPlayback(dt) {
   if (Array.isArray(rp.poses)) {
     if (!rp.poseDone) {
       const KTURN_SPEED_MS = 1.6;
+      const currentPose = rp.poses[rp.poseIdx];
+      if (Number(currentPose?.holdS) > 0 && rp.holdPoseIdx !== rp.poseIdx) {
+        rp.holdPoseIdx = rp.poseIdx;
+        rp.holdRemainingS = Number(currentPose.holdS);
+      }
+      if (Number(rp.holdRemainingS) > 0) {
+        rp.holdRemainingS = Math.max(0, Number(rp.holdRemainingS) - Math.max(0, Number(dt) || 0));
+        progressM = Math.max(progressM, Number(rp.sM) || 0);
+        return {
+          kind: rp.kind || null,
+          pos: { x: currentPose.x, z: currentPose.z },
+          heading: currentPose.h,
+          speedMS: 0,
+          reversing: !!currentPose.rev,
+          steeringAngle: Math.max(-0.75, Math.min(0.75, Number(currentPose.steer) || 0)),
+          forcePoseHeading: rp.kind === 'switchback',
+          resumeStationM: rp.resumeStationM
+        };
+      }
       rp.poseDistAcc = (rp.poseDistAcc || 0) + Math.max(0, Number(dt) || 0) * KTURN_SPEED_MS;
       while (rp.poseDistAcc >= 0.5 && rp.poseIdx < rp.poses.length - 1) {
+        const next = rp.poses[rp.poseIdx + 1];
+        if (Number(next?.holdS) > 0) {
+          rp.poseIdx += 1;
+          rp.poseDistAcc = 0;
+          break;
+        }
         rp.poseDistAcc -= 0.5;
         rp.poseIdx += 1;
       }
@@ -3100,29 +3601,12 @@ function advanceRecoveryPlayback(dt) {
         resumeStationM: rp.resumeStationM
       };
     }
-    // ポーズ列を消化 → 既存の完了処理（下のタイムライン末尾）へ落とす
+    // ポーズ列を消化 → 下の完了処理へ落とす（rp.t=1e9 でフォールスルー）。
     rp.poses = null;
     rp.t = 1e9;
   }
-  rp.t += Math.max(0, Number(dt) || 0);
-  const reverseEnd = rp.reverseTime;
-  const total = reverseEnd + rp.resumeTime;
-  if (rp.t <= reverseEnd) {
-    const u = Math.max(0, Math.min(1, rp.t / reverseEnd));
-    const su = u * u * (3 - 2 * u); // smoothstep: 後退開始/終了を滑らかに
-    progressM = Math.max(progressM, Number(rp.sM) || 0);
-    const revHeading = rp.headingTo != null ? lerpAngleRad(rp.headingFrom, rp.headingMid, su) : rp.heading;
-    const revSteer = rp.headingTo != null ? (rp.steerSign || 1) * -0.4 : Math.sign(rp.lateralM) * 0.3;
-    return { pos: lerpPoint(rp.stop, rp.shifted, su), heading: revHeading, speedMS: -2.0, reversing: true, steeringAngle: revSteer };
-  }
-  if (rp.t <= total) {
-    const u = Math.max(0, Math.min(1, (rp.t - reverseEnd) / Math.max(0.01, rp.resumeTime)));
-    const su = u * u * (3 - 2 * u); // smoothstep: 横逃げ→復帰を滑らかに
-    progressM = Math.max(progressM, (Number(rp.sM) || 0) + (Number(rp.resumeForwardM) || 0) * su);
-    const fwdHeading = rp.headingTo != null ? lerpAngleRad(rp.headingMid, rp.headingTo, su) : rp.heading;
-    const fwdSteer = rp.headingTo != null ? (rp.steerSign || 1) * 0.3 : Math.sign(rp.lateralM) * -0.25;
-    return { pos: lerpPoint(rp.shifted, rp.resume, su), heading: fwdHeading, speedMS: 3.0, reversing: false, steeringAngle: fwdSteer };
-  }
+  // K-turnポーズ列を消化した後の完了処理。旧式の横移動lerp（後退→横平行移動→復帰）
+  // フェーズは非物理のため廃止済み。ここには poseDone 済みの K-turn だけが到達する。
   // 1b(b): resume を作った地点と同じ station へ進める（従来は別式で 3〜5m 前方へ瞬間移動していた）。
   const resumeM = Number.isFinite(Number(rp.resumeStationM))
     ? Number(rp.resumeStationM)
@@ -3136,14 +3620,6 @@ function advanceRecoveryPlayback(dt) {
   autoDriveTargetOffsetM = rp.lateralM;
   // 引継ぎ直後のヘディング slew が復旧終端の位置を基準に連続するよう、直前位置を resume に合わせる。
   lastTruckPos = { x: resumePos.x, z: resumePos.z };
-  if (drivePoseMode && drivePoses.length >= 2) {
-    driveTimeS = Math.max(driveTimeS, _driveTimeAtTravelM(progressM));
-  }
-  // The precomputed physics trajectory contains the original STOP speed limit.
-  // After a recovery bypass, continuing from that trajectory would snap back to the stopped pose.
-  drivePoseMode = false;
-  drivePoses = [];
-  driveDurationS = 0;
   recoveryPlayback3D = null;
   const doneHeading = rp.kind === 'switchback' && Number.isFinite(Number(rp.exitHeading))
     ? Number(rp.exitHeading)
@@ -3336,7 +3812,10 @@ function setupPlateauOrOsmBuildings(state) {
       console.warn('[three3d] PLATEAU tiles error, keep OSM buildings:', err?.message || err);
       disposePlateauTiles();
       plateauLastStatus = { state: 'error', reason: err?.message || String(err), key };
-      addBuildings(state?.buildingsGeoJSON || []);
+      const fallbackRoadSurface = getRoadSurfaceGeo(state);
+      addBuildings(clipBuildingsByRoadSurface(
+        state?.buildingsGeoJSON || [], fallbackRoadSurface, { marginM: 0.3 }
+      ));
       setBuildingStatusText(`PLATEAU failed -> OSM buildings ${state?.buildingsGeoJSON?.length || 0}`);
     }
   }).then((handle) => {
@@ -3355,7 +3834,17 @@ function setupPlateauOrOsmBuildings(state) {
     plateauActive = true;
     plateauKey = key;
     plateauLastStatus = { state: 'active', area: handle.area?.name || '', key };
-    if (!plateauKeepOsmBuildings()) clearMeshesByTag('building');
+    if (!plateauKeepOsmBuildings()) {
+      clearMeshesByTag('building');
+    } else {
+      // PLATEAU到着前に作った不透明OSM建物を、道路面差分済み・薄表示で作り直す。
+      const currentState = store.getState();
+      const currentRoadSurface = getRoadSurfaceGeo(currentState);
+      const visualBuildings = clipBuildingsByRoadSurface(
+        currentState?.buildingsGeoJSON || [], currentRoadSurface, { marginM: 0.3 }
+      );
+      addBuildings(visualBuildings);
+    }
     setBuildingStatusText(`PLATEAU 3D Tiles: ${handle.area?.name || ''} (translucent streaming)`);
     warmPlateauTiles(handle, seq);
   }).catch((err) => {
@@ -3388,6 +3877,9 @@ export function renderSceneThree(state) {
   addSatelliteGround().catch((e) => console.warn('[three3d] satellite ground failed', e?.message || e));
   const roadSurfaceGeo = getRoadSurfaceGeo(state);
   safetyRoadSurfaceGeo = roadSurfaceGeo;
+  const collisionBuildings = clipBuildingsByRoadSurface(
+    state?.buildingsGeoJSON || [], roadSurfaceGeo, { marginM: 0.3 }
+  );
   const scount = addRoadSurface(roadSurfaceGeo);
   const edgeCount = addRoadEdgesFromSurface(roadSurfaceGeo);
   addIntersectionCaps(lastIntersectionNodes);
@@ -3395,14 +3887,12 @@ export function renderSceneThree(state) {
   // Building source: PLATEAU 3D Tiles when in-area and library available;
   // otherwise OSM building extrusions (ghost boxes).
   setupPlateauOrOsmBuildings(state);
-  const bcount = (plateauActive && !plateauKeepOsmBuildings()) ? 0 : addBuildings(state?.buildingsGeoJSON || []);
-  addBuildingFootprints(state?.buildingsGeoJSON || []);
+  const bcount = (plateauActive && !plateauKeepOsmBuildings()) ? 0 : addBuildings(collisionBuildings);
+  addBuildingFootprints(collisionBuildings);
   const rcount = addRoads(state?.geoJsonDataSets || []);
   const centerCount = addCenterlines(state?.geoJsonDataSets || []);
   const swcount = addSidewalks(state?.sidewalkGeoJSON || []);
   const arrowCount = addOnewayArrows(state?.geoJsonDataSets || []);
-  // Use clipped buildings only for collision checks.
-  const collisionBuildings = clipBuildingsByRoadSurface(state?.buildingsGeoJSON || [], roadSurfaceGeo, { marginM: 0.3 });
   const solidSet = buildCollisionSolidSet({
     buildings: collisionBuildings,
     maskEdits: state?.maskEdits || {}
@@ -3444,6 +3934,8 @@ export function renderSceneThree(state) {
   driveTimeS = 0;
   driveDurationS = 0;
   drivePoseMode = false;
+  driveFollower3D = null;
+  driveFollowerDone3D = false;
   autonomyReport3D = null;
   autonomyCurrentSample = null;
   resetSafetyMonitor3D();
@@ -3455,6 +3947,8 @@ export function renderSceneThree(state) {
   recoveryBypassUntilM = 0;
   recoveryOffsetHoldM = 0;
   recoveryOffsetHoldUntilM = 0;
+  verifyAheadCache3D = { bucket: null, blocked: false };
+  switchbackAcceptedCount3D = 0;
   clearMeshesByTag('autonomySensor');
   clearMeshesByTag('recoveryTrajectory');
   setSimTelemetry({ speedMS: 0, steeringAngle: 0 });
@@ -3592,56 +4086,46 @@ export function playThree3D(speedKmh = 18) {
     console.warn('[three3d] autonomy planner failed:', e?.message || e);
   }
 
-  // 物理シミュレーション軌跡（後輪軸の実走ライン + 時間/速度/舵角）を生成
-  let simPoses = null;
+  // 正規化・局所回避済みの経路を参照線にし、姿勢は描画tickごとに
+  // createKinematicPathFollower が積分する。事前計算ポーズの時系列再生は、
+  // 切り返し後に元軌跡へスナップするため走行ソースには使わない。
   try {
-    const routeForPhysics = routeForDrive;
-    coordinateSystem.setOrigin(routeForPhysics[0].lat, routeForPhysics[0].lng);
-    const pathM = routeForPhysics.map((ll) => coordinateSystem.latLngToMeters(ll.lat, ll.lng));
-    const simConfig = {
-      ...(state.vehicleConfig || {}),
-      vehicleSpeed: Math.max(1, Number(speedKmh) || 18) / 3.6
-    };
-    const phys = simulatePathPoses(simConfig, pathM, 0.45, {
-      dt: 0.05,
-      speedLimitAtM: (sM) => {
-        const sample = sampleAutonomyAtProgress(sM);
-        return autonomyPlaybackLimit(sample, simConfig.vehicleSpeed).allowedMS;
-      }
-    });
-    if (Array.isArray(phys) && phys.length >= 2) {
-      simPoses = phys.map((p) => {
-        const ll = coordinateSystem.metersToLatLng(p.x, p.y);
-        const xz = llToXZ(ll.lat, ll.lng);
-        return {
-          x: xz.x,
-          z: xz.z,
-          heading: headingFromPhysicsTheta(p.theta || 0),
-          speedMS: Number(p.speedMS) || 0,
-          steeringAngle: Number(p.steeringAngle) || 0,
-          timeS: Number(p.timeS) || 0,
-          travelM: Number(p.travelM) || 0
-        };
-      });
-      console.log(`[three3d] physics trajectory: ${simPoses.length} poses (kinematic bicycle model)`);
-      console.log('[three3d] playback route:', drivePlaybackRouteSource, drivePlaybackRouteMetrics || {});
-    }
-  } catch (e) {
-    console.warn('[three3d] physics sim failed, fallback to raw route:', e?.message || e);
-  }
-
-  // Use the physics trajectory for the truck path when available.
-  if (simPoses && simPoses.length >= 2) {
-    drivePoses = simPoses;
-    driveTimeS = 0;
-    driveDurationS = Math.max(0, simPoses[simPoses.length - 1].timeS || 0);
-    drivePoseMode = driveDurationS > 0;
-    routeXZ = simPoses.map((p) => ({ x: p.x, z: p.z }));
+    routeXZ = routeForDrive.map((ll) => llToXZ(ll.lat, ll.lng));
     routeCum = [0];
     for (let i = 1; i < routeXZ.length; i++) {
       const a = routeXZ[i - 1], b = routeXZ[i];
       routeCum[i] = routeCum[i - 1] + Math.hypot(b.x - a.x, b.z - a.z);
     }
+    const pathM = routeXZ.map((p) => ({ x: p.x, y: -p.z }));
+    const simConfig = {
+      ...(state.vehicleConfig || {}),
+      vehicleSpeed: Math.max(1, Number(speedKmh) || 18) / 3.6
+    };
+    driveFollower3D = createKinematicPathFollower(simConfig, pathM, {
+      x: pathM[0]?.x,
+      y: pathM[0]?.y,
+      theta: pathM.length >= 2
+        ? Math.atan2(pathM[1].y - pathM[0].y, pathM[1].x - pathM[0].x)
+        : 0,
+      progressS: 0,
+      // 縦方向動力学: plannerサンプルに焼き込まれた勾配%を追従器の制動/加速計算へ渡す
+      // （vehicleRiskModel.effectiveBrakeDecelMSS と同一の真実源。データ無し道路は0=従来挙動）。
+      gradeAtM: (sM) => {
+        const g = Number(sampleAutonomyAtProgress(sM)?.gradePct);
+        return Number.isFinite(g) ? g : 0;
+      }
+    });
+    drivePoses = [];
+    driveTimeS = 0;
+    driveDurationS = 0;
+    drivePoseMode = !!driveFollower3D;
+    driveFollowerDone3D = false;
+    console.log('[three3d] live kinematic follower:', drivePlaybackRouteSource, drivePlaybackRouteMetrics || {});
+  } catch (e) {
+    driveFollower3D = null;
+    drivePoseMode = false;
+    driveFollowerDone3D = false;
+    console.warn('[three3d] live physics initialization failed, using guarded route fallback:', e?.message || e);
   }
   if (routeXZ.length < 2) return;
 
@@ -3653,7 +4137,7 @@ export function playThree3D(speedKmh = 18) {
   const speedMS = Math.max(1, Number(speedKmh) || 18) / 3.6;
   playThree3D._speedMS = speedMS;
   playThree3D._total = total;
-  setSimTelemetry({ speedMS: 0, steeringAngle: 0, model: `${drivePoseMode ? 'kinematic bicycle' : 'constant playback'} / autonomy v1` });
+  setSimTelemetry({ speedMS: 0, steeringAngle: 0, model: `${drivePoseMode ? 'live kinematic bicycle' : 'guarded route fallback'} / autonomy v2` });
   contactCount3d = 0;
   autoDriveOffsetM = 0;
   autoDriveTargetOffsetM = 0;
@@ -3668,6 +4152,10 @@ export function playThree3D(speedKmh = 18) {
   recoveryBypassUntilM = 0;
   recoveryOffsetHoldM = 0;
   recoveryOffsetHoldUntilM = 0;
+  recoveryDebug3D = { maneuvers: [], count: 0 };
+  stallTimerS = 0;
+  verifyAheadCache3D = { bucket: null, blocked: false };
+  switchbackAcceptedCount3D = 0;
   startSafetyMonitor3D(state, speedKmh);
   clearTruckTrail();
   truckRenderHeading = routeXZ.length >= 2 ? _routeHeadingAt(0) : 0;
@@ -3696,9 +4184,7 @@ function startRenderLoop() {
       const total = playThree3D._total || routeCum[routeCum.length - 1];
       const preAutonomySample = sampleAutonomyAtProgress(progressM);
       const preLimit = autonomyPlaybackLimit(preAutonomySample, speedMS);
-      // drivePoseMode の時系列は simulatePathPoses() で速度制限を織り込み済み。
-      // ここでも scale を掛けると低速区間が二重に遅くなり、実車らしく動かない。
-      const driveDt = drivePoseMode ? simDt : simDt * preLimit.scale;
+      const driveDt = simDt;
       let basePos = null;
       let basePosAlreadyOffset = false;
       let heading = 0;
@@ -3706,14 +4192,19 @@ function startRenderLoop() {
       let poseSteer = 0;
       let forceHeadingNow = false;
       const bypassPlaybackActive = !recoveryPlayback3D && recoveryBypassUntilM > progressM + 0.25;
-      if (drivePoseMode && !bypassPlaybackActive && drivePoses.length >= 2) {
-        driveTimeS = Math.min(driveDurationS, driveTimeS + driveDt);
-        const pose = _sampleDrivePoseAtTime(driveTimeS);
-        basePos = pose ? { x: pose.x, z: pose.z } : _sampleRouteAt(progressM);
-        heading = pose?.heading ?? _routeHeadingAt(progressM);
-        poseSpeedMS = pose?.speedMS ?? speedMS;
-        poseSteer = pose?.steeringAngle ?? 0;
-        progressM = Math.min(total, pose?.travelM ?? progressM);
+      if (driveFollower3D && !recoveryPlayback3D) {
+        const pose = driveFollower3D.step(driveDt, { targetSpeedMS: preLimit.allowedMS });
+        basePos = { x: pose.x, z: -pose.y };
+        heading = headingFromPhysicsTheta(pose.theta);
+        poseSpeedMS = Number(pose.speedMS) || 0;
+        poseSteer = Number(pose.steeringAngle) || 0;
+        progressM = Math.min(total, Number(pose.progressS) || progressM);
+        driveFollowerDone3D = !!pose.done;
+      } else if (recoveryPlayback3D) {
+        basePos = lastTruckPos || _sampleRouteAt(progressM);
+        heading = truckRenderHeading;
+        poseSpeedMS = 0;
+        poseSteer = 0;
       } else {
         progressM = Math.min(total, progressM + Math.min(speedMS, preLimit.allowedMS) * simDt);
         basePos = _sampleRouteAt(progressM);
@@ -3725,10 +4216,9 @@ function startRenderLoop() {
       poseSpeedMS = Math.min(poseSpeedMS, currentLimit.allowedMS);
       const currentState = store.getState();
       const vc = currentState.vehicleConfig;
-      if (!recoveryPlayback3D) {
-        const ev = findPlayableRecoveryEvent(autonomyCurrentSample, progressM);
-        if (ev) beginRecoveryPlayback(ev);
-      }
+      // 旧 reverse/replan recovery は「後退→横へ平行移動→復帰」の補間で、車両物理に反する。
+      // 地上障害物は localAvoidance が作った回避経路を kinematic bicycle で走らせる。
+      // ここでは旧式の横移動再生を発火させない。
       // 切り返し（K-turn）: スイング超過の急コーナーは徐行で突っ込まず、
       // 手前で一旦停止→後退でヘディングを出口へ振ってから再進入する（planner推奨フラグ）。
       const switchbackStationM = Number(autonomyCurrentSample?.sM);
@@ -3738,7 +4228,7 @@ function startRenderLoop() {
           && !bypassPlaybackActive
           && !terminalSwitchbackGrace
           && progressM >= (Number(autonomyCurrentSample.sM) || 0) - 4) {
-        beginCornerSwitchback(autonomyCurrentSample, vc);
+        beginCornerSwitchback(autonomyCurrentSample, vc, { pos: basePos, heading });
       }
       const recoveryPose = advanceRecoveryPlayback(simDt);
       const manualRecoveryActive = recoveryPose && !recoveryPose.done;
@@ -3748,6 +4238,17 @@ function startRenderLoop() {
         heading = recoveryPose.heading ?? _routeHeadingAt(progressM);
         poseSpeedMS = recoveryPose.speedMS ?? 0;
         poseSteer = recoveryPose.steeringAngle ?? 0;
+        if (driveFollower3D && basePos) {
+          driveFollower3D.reset({
+            x: basePos.x,
+            y: -basePos.z,
+            theta: Math.PI / 2 - heading,
+            speedMS: 0,
+            steeringAngle: 0,
+            progressS: Number(recoveryPose.resumeStationM) || progressM
+          });
+          driveFollowerDone3D = false;
+        }
         // K-turn完了直後は、直前の切り返し方位を移動ベクトルslewが保持すると
         // 復帰点で車体だけ斜めに残り、道路帯を割る。完了フレームだけ経路方位へ同期する。
         forceHeadingNow = true;
@@ -3780,25 +4281,31 @@ function startRenderLoop() {
       const reversingNow = (manualRecoveryActive && recoveryPose?.reversing) || poseSpeedMS < -0.05;
       const maxTurn = truckHeadingMaxTurnRad(vc, poseSpeedMS, simDt);
       let targetHeading = heading; // 既定: pose/復旧の車体ヘディング
-      if (forceHeadingNow) {
+      let wheelTravelM = 0;
+      const livePhysicsHeading = !!driveFollower3D && !manualRecoveryActive;
+      if (forceHeadingNow || livePhysicsHeading) {
         truckRenderHeading = heading;
       } else if (!reversingNow && lastTruckPos) {
         const mvx = pos.x - lastTruckPos.x;
         const mvz = pos.z - lastTruckPos.z;
         targetHeading = Math.hypot(mvx, mvz) > 0.03 ? Math.atan2(mvx, -mvz) : truckRenderHeading;
       }
-      if (!forceHeadingNow) {
+      if (lastTruckPos) {
+        wheelTravelM = Math.hypot(pos.x - lastTruckPos.x, pos.z - lastTruckPos.z) * (reversingNow ? -1 : 1);
+      }
+      if (!forceHeadingNow && !livePhysicsHeading) {
         heading = approachAngle(truckRenderHeading, targetHeading, maxTurn);
         truckRenderHeading = heading;
       }
-      lastTruckPos = { x: pos.x, z: pos.z };
       placeTruckAt(pos.x, pos.z, heading);
       setTruckSteer(poseSteer);
+      rollTruckWheels(wheelTravelM);
+      lastTruckPos = { x: pos.x, z: pos.z };
       addTruckTrailFootprint(pos, heading, vc, progressM);
       setSimTelemetry({
         speedMS: poseSpeedMS,
         steeringAngle: poseSteer,
-        model: `${manualRecoveryActive ? (recoveryPose?.kind === 'switchback' ? 'K-turn switchback' : 'reverse/replan recovery') : (drivePoseMode ? 'kinematic bicycle' : 'constant playback')} / autonomy v1`
+        model: `${manualRecoveryActive ? (recoveryPose?.kind === 'switchback' ? 'K-turn switchback' : 'reverse/replan recovery') : (drivePoseMode ? 'live kinematic bicycle' : 'guarded route fallback')} / autonomy v2`
       });
       setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D, currentLimit);
 
@@ -3826,6 +4333,50 @@ function startRenderLoop() {
           sample: autonomyCurrentSample || null,
           recoveryStatus: autonomyReport3D?.summary?.recoveryStatus || null
         });
+      }
+      // 検証済みブロッカーへの正直な停止（設計指示「通れないなら止まれ」／(44)偽STOP対策と両立）。
+      // MONITORED_CRAWL（plannerがblocker有STOPを出した直線区間）で、blockerまでの前方余裕が
+      // 12m以下のときだけ、前方~15mを実際にフットプリント掃引して確認する。接触があれば
+      // 「予測でなく検証済みの障害物」として理由付きMRM。掃引がクリーンなら従来どおり監視徐行
+      // （localAvoidanceが回避経路を作れているケースは回避後の経路上で掃引され接触せず徐行継続）。
+      // overheadブロッカーの既存ハードMRM（上のブロック）は変更しない。
+      const monitoredForwardClrM = Number(autonomyCurrentSample?.forwardClearanceM);
+      if (
+        !safetyMrmStop3D
+        && currentLimit.mode === 'MONITORED_CRAWL'
+        && !manualRecoveryActive
+        && !recoveryPlayback3D
+        && Number.isFinite(monitoredForwardClrM)
+        && monitoredForwardClrM <= 12
+        && verifyAheadBlocked(progressM, vc)
+      ) {
+        triggerMrmStop3D('verified_blocker_ahead', {
+          progressM: Math.round((Number(progressM) || 0) * 10) / 10,
+          forwardClearanceM: Math.round(monitoredForwardClrM * 10) / 10,
+          blockerId: autonomyCurrentSample?.blockerId || null,
+          sample: autonomyCurrentSample || null
+        });
+      }
+      // スタック検出→理由付きMRM: 復旧非実行中に実速度がほぼ0のまま完走もせず
+      // 5秒(sim時間)以上停滞したら正直に停止する（無限フリーズ=「実行されない」の根絶）。
+      // overheadの正当なSTOPは上のMRMが先に出るため誤爆しない。simTime基準で計測。
+      const notFinished = !(drivePoseMode && driveFollowerDone3D) && progressM < total - 0.5;
+      if (
+        !safetyMrmStop3D
+        && !manualRecoveryActive
+        && !recoveryPlayback3D
+        && notFinished
+        && Math.abs(poseSpeedMS) < 0.05
+      ) {
+        stallTimerS += simDt;
+        if (stallTimerS >= 5) {
+          triggerMrmStop3D('stalled_no_progress', {
+            progressM: Math.round((Number(progressM) || 0) * 10) / 10,
+            sample: autonomyCurrentSample || null
+          });
+        }
+      } else {
+        stallTimerS = 0;
       }
       updateAutonomyHud3D(autonomyCurrentSample, currentLimit, poseSpeedMS);
 
@@ -3864,12 +4415,12 @@ function startRenderLoop() {
         if (controls) { controls.target.lerp(new THREE.Vector3(pos.x, 2, pos.z), 0.15); }
       }
 
-      if ((drivePoseMode && driveTimeS >= driveDurationS) || (!drivePoseMode && progressM >= total)) {
+      if ((drivePoseMode && driveFollowerDone3D) || (!drivePoseMode && progressM >= total)) {
         playing = false;
         setSimTelemetry({
           speedMS: 0,
           steeringAngle: poseSteer,
-          model: `${drivePoseMode ? 'kinematic bicycle' : 'constant playback'} / autonomy v1`
+          model: `${drivePoseMode ? 'live kinematic bicycle' : 'guarded route fallback'} / autonomy v2`
         });
         setAutonomyTelemetry(autonomyCurrentSample, autonomyReport3D, currentLimit);
       }
