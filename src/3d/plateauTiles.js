@@ -337,7 +337,8 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
     sampleRadiusM: plateauSampleRadiusM(),
     meshesInRadius: 0,
     groundEstimateY: null,
-    groundStable: false
+    groundStable: false,
+    groundVisible: !plateauGroundAlignEnabled()
   };
   // 原点(ローカル0,0)から水平R以内に実際に入る頂点だけを見て、最近傍候補の中央値で地盤を推定する。
   // メッシュ中心やタイル全体のminYは使わないため、遠方LOD・屋根面・タイル境界に引きずられない。
@@ -457,6 +458,8 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
       groundMetrics.sampled = false;
       groundMetrics.groundStable = false;
       outerGroup.position.y = manualOffset;
+      outerGroup.visible = true;
+      groundMetrics.groundVisible = true;
       groundMetrics.appliedYOffsetM = Number(outerGroup.position.y.toFixed(2));
       return;
     }
@@ -493,6 +496,7 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
       _lastMeshSignature = signature;
       _lastSampleMeshCount = meshCount;
       if (bounds) {
+        const firstValidGround = !groundMetrics.sampled;
         _sampleAttempted = true;
         groundMetrics.baseMinY = Number(bounds.minY.toFixed(2));
         groundMetrics.baseMaxY = Number(bounds.maxY.toFixed(2));
@@ -506,6 +510,12 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
         let shift = plateauGroundTargetY() - bounds.groundEstimateY;
         shift = Math.max(-AUTO_SHIFT_CLAMP_M, Math.min(AUTO_SHIFT_CLAMP_M, shift));
         _targetShiftM = shift;
+        // Do not show tiles at a knowingly wrong vertical datum. The first valid
+        // local ground sample is applied atomically before reveal; later LOD
+        // refinements continue to use the smoothing path below.
+        if (firstValidGround) _appliedShiftM = shift;
+        outerGroup.visible = true;
+        groundMetrics.groundVisible = true;
         groundMetrics.autoShiftM = Number(shift.toFixed(2));
         groundMetrics.sampled = true;
       }
@@ -545,6 +555,7 @@ export async function createPlateauTiles({ THREE, scene, camera, renderer, origi
     outerGroup = new THREE.Group();
     outerGroup.name = 'plateauTilesOuter';
     outerGroup.position.y = plateauYOffsetM(); // 自動接地後の微調整用（任意）
+    outerGroup.visible = !plateauGroundAlignEnabled();
     outerGroup.add(pivot);
     scene.add(outerGroup);
     applyPlateauOpacity(tiles.group);

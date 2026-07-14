@@ -67,6 +67,7 @@ const state = {
   perceptionWidthRoadIds: [],
   lastEndpointSignature: '',
   worldAbortController: null,
+  worldLoadGeneration: 0,
   autoPerceptionRunning: false,
   autoPerceptionQueued: null,
   autoPerceptionGeneration: 0,
@@ -88,6 +89,20 @@ function setText(id, value) {
 
 function setStatus(value) {
   setText('index3dStatus', value);
+}
+
+function isCurrentWorldLoad(controller, generation) {
+  return state.worldLoadGeneration === generation && state.worldAbortController === controller;
+}
+
+function canCommitWorldLoad(controller, generation) {
+  return isCurrentWorldLoad(controller, generation) && !controller.signal.aborted;
+}
+
+function invalidateWorldLoad() {
+  state.worldLoadGeneration += 1;
+  state.worldAbortController?.abort();
+  state.loadingWorld = false;
 }
 
 function logLine(value) {
@@ -162,6 +177,7 @@ function updateMetrics() {
   if (endpointSig !== state.lastEndpointSignature) {
     state.lastEndpointSignature = endpointSig;
     if (state.routeLoaded || state.worldLoaded) {
+      invalidateWorldLoad();
       state.routeLoaded = false;
       state.worldLoaded = false;
       state.lastWorldMetrics = null;
@@ -539,6 +555,7 @@ function applyRoute(routeResult, endpoints, source = 'osrm') {
   const route = thinRoute(routeResult.coordinates || [], 1200);
   if (route.length < 2) throw new Error('経路点が不足しています。');
 
+  invalidateWorldLoad();
   store.setSelectedEndpoints(endpoints.map((p, idx) => ({
     id: `index3d-${idx + 1}`,
     lat: p.lat,
@@ -671,6 +688,7 @@ async function loadWorldForRoute() {
 
   if (state.worldAbortController) state.worldAbortController.abort();
   const controller = new AbortController();
+  const generation = ++state.worldLoadGeneration;
   state.worldAbortController = controller;
   state.loadingWorld = true;
   state.worldLoaded = false;
@@ -688,6 +706,7 @@ async function loadWorldForRoute() {
       roadDataSource: byId('roadDataSource')?.value || 'hybrid',
       signal: controller.signal
     });
+    if (!canCommitWorldLoad(controller, generation)) return;
     store.setGeoJsonDataSets(world.roads);
     store.setSidewalkGeoJSON(world.sidewalks);
     store.setBuildingsGeoJSON(world.buildings);
@@ -714,10 +733,15 @@ async function loadWorldForRoute() {
     // 実SV/YOLO（runRealPerceptionFusion）は Google API を使う。window.INDEX3D_AUTO_PERCEPTION=false で無効化。
     // 非ブロッキング + 世代ガードつき。古いスキャン結果は新ルートへ適用しない。
     scheduleAutoPerceptionScan();
+  } catch (error) {
+    if (!isCurrentWorldLoad(controller, generation)) return;
+    throw error;
   } finally {
-    if (state.worldAbortController === controller) state.worldAbortController = null;
-    state.loadingWorld = false;
-    updateMetrics();
+    if (isCurrentWorldLoad(controller, generation)) {
+      state.worldAbortController = null;
+      state.loadingWorld = false;
+      updateMetrics();
+    }
   }
 }
 
@@ -1092,6 +1116,7 @@ function clearPerceptionWidths() {
 // 経路クリア/リセット時に再生停止、知覚補正クリア、3D再描画まで行う。
 function resetSimAfterRouteChange() {
   try { stopThree3D(); } catch (_e) {}
+  invalidateWorldLoad();
   state.autoPerceptionGeneration += 1;
   state.autoPerceptionQueued = null;
   state.lastAutoPerceptionSignature = '';
@@ -1884,6 +1909,7 @@ function exposeTestHooks() {
   // 例: fetch('runtime/worlds/world_xxxx.json').then(r=>r.json()).then(window.index3DLoadCompiledWorld)
   // loadWorldForRoute と同じ読込後処理（worldLoaded・再描画・パネル・メトリクス）を通すこと。
   window.index3DLoadCompiledWorld = async (jsonOrObj) => {
+    invalidateWorldLoad();
     const { applyWorldToStore } = await import('./world/worldLoader.js');
     const info = applyWorldToStore(jsonOrObj, store);
     try {

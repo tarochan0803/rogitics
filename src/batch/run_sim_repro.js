@@ -17,6 +17,8 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const MAX_TICKS = 500000;
+const MAX_VARIABLE_DT_FRAMES = 100000;
 
 function parseArgs(argv) {
   const o = { runs: 100, out: path.join(ROOT, 'runtime', 'sim_repro') };
@@ -90,9 +92,12 @@ async function main() {
 
   function runOnce(dtS, onTick) {
     const sim = createAutoFollowSim({ route, dtS, speedFn: speedProfile(totalM) });
-    while (!sim.state.done && sim.state.tick < 500000) {
+    while (!sim.state.done && sim.state.tick < MAX_TICKS) {
       sim.step();
       if (onTick) onTick(sim.state);
+    }
+    if (!sim.state.done) {
+      throw new Error(`simulation did not reach done=true before max ticks: dt=${dtS}, tick=${sim.state.tick}, sM=${sim.state.sM}, totalM=${totalM}, maxTicks=${MAX_TICKS}`);
     }
     return sim.state;
   }
@@ -126,11 +131,14 @@ async function main() {
     // step時間の揺らぎを速度換算で注入（16.7ms±8ms のフレームを 50ms 固定と比較）
     let acc = 0;
     let t = 0;
-    while (!sim.state.done && t < 100000) {
+    while (!sim.state.done && t < MAX_VARIABLE_DT_FRAMES) {
       const frame = 0.0167 + (rng() - 0.5) * 0.016;
       acc += frame;
       while (acc >= DT && !sim.state.done) { acc -= DT; sim.step(); trVar.push(traceRecord(sim.state)); }
       t++;
+    }
+    if (!sim.state.done) {
+      throw new Error(`variable-dt replay did not reach done=true before max frames: frame=${t}, tick=${sim.state.tick}, sM=${sim.state.sM}, totalM=${totalM}, maxFrames=${MAX_VARIABLE_DT_FRAMES}`);
     }
   }
   // 固定dtアキュムレータで消費すれば、フレーム揺らぎがあっても trace は一致するはず

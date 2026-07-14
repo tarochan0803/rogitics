@@ -29,6 +29,7 @@ const mockTurf = {
 
 // 局所回避プランナ検証用: 実 turf（src/batch/node_modules/@turf/turf）を使う。
 const realTurf = require('@turf/turf');
+globalThis.turf = realTurf;
 
 async function main() {
   const mod = await import(pathToFileURL(path.join(ROOT, 'src', 'sim', 'safetyMonitor.js')).href);
@@ -307,7 +308,7 @@ async function main() {
   const riskMod = await import(pathToFileURL(path.join(ROOT, 'src', 'core', 'vehicleRiskModel.js')).href);
   const { effectiveBrakeDecelMSS, effectiveAccelMSS } = riskMod;
   const physicsMod = await import(pathToFileURL(path.join(ROOT, 'src', 'core', 'physics.js')).href);
-  const { simulatePathPoses } = physicsMod;
+  const { simulatePathPoses, createKinematicPathFollower } = physicsMod;
 
   const flatDry = effectiveBrakeDecelMSS({ gradePct: 0, surface: 'dry' });
   check('brake: flat dry == comfort 2.8', Math.abs(flatDry - 2.8) < 1e-9, `a=${flatDry.toFixed(4)}`);
@@ -328,24 +329,36 @@ async function main() {
   check('brake: monotonic in downhill steepness', down4 > down8 && down8 > down16,
     `-4=${down4.toFixed(3)} -8=${down8.toFixed(3)} -16=${down16.toFixed(3)}`);
 
-  // 極端勾配・低μでも minDecelMSS(0.8) を下回らない
-  const extremeDown = effectiveBrakeDecelMSS({ gradePct: -60, surface: 'wet' });
-  check('brake: never below minDecelMSS on extreme grade', extremeDown >= 0.8 - 1e-9,
-    `a=${extremeDown.toFixed(4)}`);
+  const wetDown30 = effectiveBrakeDecelMSS({ gradePct: -30, surface: 'wet' });
+  check('brake: wet -30% returns zero when net capability is non-positive', wetDown30 === 0,
+    `a=${wetDown30.toFixed(4)}`);
+
+  const wetUp30 = effectiveBrakeDecelMSS({ gradePct: 30, surface: 'wet' });
+  check('brake: wet uphill cap derives from wet surface comfort',
+    wetUp30 <= flatWet * 1.3 + 1e-9 && wetUp30 > flatWet,
+    `up=${wetUp30.toFixed(4)} cap=${(flatWet * 1.3).toFixed(4)}`);
 
   // surfaceCondition は vehicleConfig 経由でも効く（surface 引数より優先）
   const wetViaConfig = effectiveBrakeDecelMSS({ gradePct: 0, surface: 'dry', vehicleConfig: { surfaceCondition: 'wet' } });
   check('brake: vehicleConfig.surfaceCondition overrides surface arg',
     Math.abs(wetViaConfig - flatWet) < 1e-9, `a=${wetViaConfig.toFixed(4)}`);
 
-  // 加速: 平坦=1.2 / 上りで減る / 極端上りでも minAccelMSS(0.3) 以上
+  // 加速: 平坦=1.2 / 上りで減る / 登坂能力を超えたら架空の加速を返さない
   const accFlat = effectiveAccelMSS({ gradePct: 0 });
   const accUp8 = effectiveAccelMSS({ gradePct: 8 });
   const accUp40 = effectiveAccelMSS({ gradePct: 40 });
   check('accel: flat == comfort 1.2', Math.abs(accFlat - 1.2) < 1e-9, `a=${accFlat.toFixed(4)}`);
-  check('accel: uphill reduces accel and stays >= minAccelMSS',
-    accUp8 < accFlat - 0.05 && accUp40 >= 0.3 - 1e-9,
+  check('accel: uphill reduces accel and returns zero beyond climb capability',
+    accUp8 < accFlat - 0.05 && accUp40 === 0,
     `up8=${accUp8.toFixed(3)} up40=${accUp40.toFixed(3)}`);
+
+  const lightBrake = effectiveBrakeDecelMSS({ gradePct: 0, vehicleConfig: { grossWeight: 8 } });
+  const heavyBrake = effectiveBrakeDecelMSS({ gradePct: 0, vehicleConfig: { grossWeight: 20 } });
+  const lightAccel = effectiveAccelMSS({ gradePct: 0, vehicleConfig: { grossWeight: 8 } });
+  const heavyAccel = effectiveAccelMSS({ gradePct: 0, vehicleConfig: { grossWeight: 20 } });
+  check('load: heavy vehicle has lower operational acceleration and comfort braking',
+    heavyAccel < lightAccel && heavyBrake < lightBrake,
+    `accel=${lightAccel.toFixed(3)}/${heavyAccel.toFixed(3)} brake=${lightBrake.toFixed(3)}/${heavyBrake.toFixed(3)}`);
 
   // 後方互換: gradeAtM 未指定 == gradeAtM=()=>0（dry）で simulatePathPoses が bit 一致
   const poseHash = (poses) => poses
@@ -371,6 +384,56 @@ async function main() {
   check('physics: nonzero grade changes the pose stream',
     poseHash(posesDownhill) !== poseHash(posesDefault),
     `n=${posesDownhill.length}`);
+
+  const zeroBrakeHardStop = simulatePathPoses(
+    { ...kineCfg, vehicleSpeed: 1, surfaceCondition: 'wet' },
+    [{ x: 0, y: 0 }, { x: 1000, y: 0 }],
+    0.1,
+    {
+      dt: 0.05,
+      maxSteps: 200,
+      gradeAtM: () => -30,
+      speedLimitAtM: () => 0
+    }
+  );
+  const zeroBrakeFinal = zeroBrakeHardStop[zeroBrakeHardStop.length - 1];
+  check('physics: zero-brake hard STOP does not launch from rest through the low-speed branch',
+    Number(zeroBrakeFinal?.speedMS) === 0 && Number(zeroBrakeFinal?.travelM) === 0,
+    `speed=${Number(zeroBrakeFinal?.speedMS).toFixed(3)} travel=${Number(zeroBrakeFinal?.travelM).toFixed(3)}`);
+
+  const follower = createKinematicPathFollower(
+    { ...kineCfg, vehicleSpeed: 6, maxAccel: 1.2, maxDecel: 2.8 },
+    [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+    { speedMS: 6, speedLimitAtM: (sM) => sM >= 50 ? 0 : Infinity }
+  );
+  let firstLimitedProgressM = null;
+  for (let i = 0; i < 400; i++) {
+    const live = follower.step(0.05, { targetSpeedMS: 6 });
+    if (firstLimitedProgressM == null && live.targetSpeedMS < 5.99) firstLimitedProgressM = live.progressS;
+    if (live.progressS >= 50 || live.done) break;
+  }
+  check('physics: live follower brakes before an upcoming STOP limit',
+    firstLimitedProgressM != null && firstLimitedProgressM < 48,
+    `firstLimited=${firstLimitedProgressM == null ? 'none' : firstLimitedProgressM.toFixed(2)}m`);
+
+  const plannerMod = await import(pathToFileURL(path.join(ROOT, 'src', 'sim', 'autonomy', 'behaviorPlanner.js')).href);
+  const plannerRoute = [{ lat: 35.0, lng: 139.0 }, { lat: 35.0, lng: 139.001 }];
+  const plannerRoad = {
+    type: 'Feature',
+    properties: { demGradeMedianPct: 12, width: 8 },
+    geometry: { type: 'LineString', coordinates: [[139.0, 35.0], [139.001, 35.0]] }
+  };
+  const plannerReport = plannerMod.buildAutonomyDriveReport({
+    route: plannerRoute,
+    roads: [plannerRoad],
+    vehicleConfig: { ...kineCfg, grossWeight: 8 },
+    sampleSpacingM: 20,
+    cruiseSpeedKmh: 18
+  });
+  const gradedSample = plannerReport.samples.find((sample) => sample.gradePct === 12);
+  check('planner: samples store conservative brakeGradePct contract',
+    !!gradedSample && gradedSample.brakeGradePct === -12,
+    `brakeGradePct=${gradedSample?.brakeGradePct}`);
 
   console.log(pass ? '\nsafety check ALL PASS' : '\nsafety check FAILED');
   return pass ? 0 : 1;

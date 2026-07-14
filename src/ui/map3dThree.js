@@ -2,6 +2,7 @@
 // 座標系: X=東(m), Z=-匁Em), Y=高さ(m)。地面は XZ 平面、E
 import { store } from '../state.js';
 import { createKinematicPathFollower } from '../core/physics.js';
+import { effectiveAccelMSS, effectiveBrakeDecelMSS } from '../core/vehicleRiskModel.js';
 import { safeDifference, safeUnion, turf } from '../utils/geo.js';
 import { buildRoadUnion } from '../core/feasibility.js';
 import { normalizeRouteForVehicle } from '../core/trajectoryPlanner.js';
@@ -77,12 +78,14 @@ let driveDurationS = 0;
 let drivePoseMode = false;
 let driveFollower3D = null;
 let driveFollowerDone3D = false;
+let fallbackDriveSpeedMS = 0;
 let drivePlaybackRouteSource = 'raw';
 let drivePlaybackRouteMetrics = null;
 let autonomyReport3D = null;
 let autonomyCurrentSample = null;
 let autonomyCurrentLimit = null;
 let recoveryPlayback3D = null;
+let pendingSwitchback3D = null;
 let recoveryHandledKeys3D = new Set();
 let switchbackHandled3D = new Set();
 let switchbackHandledZones3D = [];
@@ -1735,7 +1738,8 @@ const MRM_REASON_LABEL = {
   verified_blocker_ahead: '前方障害物(検証済)',
   maneuver_loop_suspected: '切り返し反復検出',
   planner_stop_unresolved: '進入不可',
-  stalled_no_progress: '停滞検出'
+  stalled_no_progress: '停滞検出',
+  braking_unavailable: '制動能力不足'
 };
 
 function ensureAutonomyHud3D() {
@@ -1770,7 +1774,12 @@ function updateAutonomyHud3D(sample, limit, speedMS) {
   const st = HUD_MODE_STYLE[mode] || HUD_MODE_STYLE.CRUISE;
 
   let headline;
-  if (mrm) headline = `<span style="color:#ef4444;font-weight:700">■ MRM停止</span> <span style="opacity:.8">${MRM_REASON_LABEL[mrm.reason] || '進入不可'}</span>`;
+  if (mrm) {
+    const phaseLabel = mrm.phase === 'BRAKING'
+      ? 'MRM制動中'
+      : (mrm.phase === 'UNCONTROLLED' ? 'MRM停止不能' : 'MRM停止');
+    headline = `<span style="color:#ef4444;font-weight:700">■ ${phaseLabel}</span> <span style="opacity:.8">${MRM_REASON_LABEL[mrm.reason] || '進入不可'}</span>`;
+  }
   else if (isSwitchback) headline = '<span style="color:#a78bfa;font-weight:700">↩ 切り返し中</span> <span style="opacity:.8">K-turn</span>';
   else if (isRecovery) headline = '<span style="color:#a78bfa;font-weight:700">↩ 復旧走行中</span>';
   else headline = `<span style="color:${st.color};font-weight:700">● ${st.label}</span>`;
@@ -1819,7 +1828,9 @@ export function getSafetyMonitorMetrics() {
   const first = safetyMonitor3D?.firstViolation || null;
   const last = safetyLastResult3D || safetyMonitor3D?.lastResult || null;
   const status = safetyMrmStop3D
-    ? 'MRM_STOP'
+    ? (safetyMrmStop3D.phase === 'BRAKING'
+      ? 'MRM_BRAKING'
+      : (safetyMrmStop3D.phase === 'UNCONTROLLED' ? 'MRM_FAILED' : 'MRM_STOP'))
     : (first ? 'VIOLATION' : (safetyMonitor3D ? 'OK' : 'IDLE'));
   return {
     active: !!safetyMonitor3D,
@@ -1897,24 +1908,48 @@ function saveSafetyTrace3D(reason, detail = {}) {
 
 function triggerMrmStop3D(reason, detail = {}) {
   if (safetyMrmStop3D) return safetyMrmStop3D;
+  const followerSpeed = (() => {
+    try { return Math.abs(Number(driveFollower3D?.getState?.()?.speedMS) || 0); } catch (_e) { return 0; }
+  })();
+  const requestedSpeedMS = Number.isFinite(Number(detail.speedMS))
+    ? Math.abs(Number(detail.speedMS))
+    : followerSpeed;
+  const brakingUnavailable = detail.brakingAvailable === false && requestedSpeedMS > 0.08;
   safetyMrmStop3D = {
     reason,
+    phase: brakingUnavailable ? 'UNCONTROLLED' : (requestedSpeedMS > 0.08 ? 'BRAKING' : 'STOPPED'),
+    requestedSpeedMS: Math.round(requestedSpeedMS * 1000) / 1000,
     progressM: Math.round((Number(progressM) || 0) * 10) / 10,
     traceHash: safetyMonitor3D?.hash?.() || null,
     detail
   };
   saveSafetyTrace3D(reason, detail);
+  setTruckDanger(true);
+  if (safetyMrmStop3D.phase !== 'BRAKING') {
+    playing = false;
+    setSimTelemetry({
+      speedMS: brakingUnavailable ? requestedSpeedMS : 0,
+      steeringAngle: 0,
+      model: `${brakingUnavailable ? 'MRM braking unavailable' : 'MRM stopped'} / ${reason}`
+    });
+  }
+  const poseEl = document.getElementById('map3dPoseCount');
+  if (poseEl) poseEl.textContent = `${Math.round(progressM)}m / MRM ${safetyMrmStop3D.phase.toLowerCase()} ${reason}`;
+  console.warn('[safety-monitor] MRM requested', safetyMrmStop3D);
+  return safetyMrmStop3D;
+}
+
+function finishMrmStop3D() {
+  if (!safetyMrmStop3D || safetyMrmStop3D.phase !== 'BRAKING') return false;
+  safetyMrmStop3D.phase = 'STOPPED';
+  safetyMrmStop3D.stoppedProgressM = Math.round((Number(progressM) || 0) * 10) / 10;
+  safetyMrmStop3D.stoppedSimTimeS = Math.round((Number(safetySimTimeS) || 0) * 100) / 100;
   playing = false;
   setTruckDanger(true);
-  setSimTelemetry({
-    speedMS: 0,
-    steeringAngle: 0,
-    model: `MRM safe stop / ${reason}`
-  });
-  const poseEl = document.getElementById('map3dPoseCount');
-  if (poseEl) poseEl.textContent = `${Math.round(progressM)}m / MRM ${reason}`;
-  console.warn('[safety-monitor] MRM stop', safetyMrmStop3D);
-  return safetyMrmStop3D;
+  setSimTelemetry({ speedMS: 0, steeringAngle: 0, model: `MRM stopped / ${safetyMrmStop3D.reason}` });
+  saveSafetyTrace3D(safetyMrmStop3D.reason, safetyMrmStop3D.detail || {});
+  console.warn('[safety-monitor] MRM stopped', safetyMrmStop3D);
+  return true;
 }
 
 // 搬入の始終点は道路端・敷地際に置かれるのが正常運用のため、経路の端では
@@ -1973,7 +2008,8 @@ function runSafetyMonitorTick({ pos, heading, state, speedMS, sample, limit, sim
     const inSwitchback = recoveryPlayback3D?.kind === 'switchback';
     triggerMrmStop3D(inSwitchback ? 'switchback_infeasible' : 'safety_invariant_violation', {
       tick: result.tick,
-      violations: result.violations
+      violations: result.violations,
+      speedMS: Math.abs(Number(speedMS) || 0)
     });
   }
   return result;
@@ -2280,6 +2316,41 @@ function sampleAutonomyAtProgress(sM) {
   const b = samples[hi];
   if (!b) return a;
   return Math.abs((Number(a.sM) || 0) - s) <= Math.abs((Number(b.sM) || 0) - s) ? a : b;
+}
+
+// The planner samples every few metres. For a braking envelope, treating the
+// lower next sample as if it starts only at its centre is optimistic by half a
+// sample interval. Return the stricter of the bracketing samples so the live
+// follower starts braking before the displayed mode changes.
+function previewAutonomySpeedLimitAtProgress(sM, nominalMS) {
+  const samples = autonomyReport3D?.samples || [];
+  if (!samples.length) return Math.max(0, Number(nominalMS) || 0);
+  const s = Number(sM) || 0;
+  let hi = 0;
+  while (hi < samples.length && (Number(samples[hi]?.sM) || 0) < s) hi += 1;
+  const candidates = [];
+  if (hi > 0) candidates.push(samples[hi - 1]);
+  if (hi < samples.length) candidates.push(samples[hi]);
+  if (!candidates.length) candidates.push(samples[samples.length - 1]);
+  let limitMS = Math.max(0, Number(nominalMS) || 0);
+  for (const sample of candidates) {
+    limitMS = Math.min(limitMS, autonomyPlaybackLimit(sample, nominalMS).allowedMS);
+  }
+  return limitMS;
+}
+
+function findUpcomingSwitchbackSample(sM, lookaheadM) {
+  const samples = autonomyReport3D?.samples || [];
+  const fromM = Number(sM) || 0;
+  const toM = fromM + Math.max(0, Number(lookaheadM) || 0);
+  return samples.find((sample) => {
+    const stationM = Number(sample?.sM);
+    return sample?.switchbackRecommended
+      && Number.isFinite(stationM)
+      && stationM >= fromM - 0.5
+      && stationM <= toM
+      && !hasHandledSwitchbackZone(stationM);
+  }) || null;
 }
 
 function isRecoveryBypassActive(sample, sM = progressM) {
@@ -3122,10 +3193,25 @@ function resampleKTurnWorldPoses(rawPoses, stepM = 0.5) {
     const a = rawPoses[i - 1];
     const b = rawPoses[i];
     if ((!!a.rev) !== (!!b.rev)) {
-      // 前後進の切替 = 必ず停止。舵角も合わせるためのホールドポーズを挿入する。
-      out.push({ x: b.x, z: b.z, h: b.h, rev: !!b.rev, steer: Number(b.steer) || 0, holdS: 0.3 });
+      // The gear changes at a, before b's first motion primitive. Stop at a in
+      // the old gear, then select the new gear at the same coordinates. Placing
+      // the hold at b would reverse direction while still traversing a->b.
+      const transitionPose = {
+        x: a.x, z: a.z, h: a.h, rev: !!a.rev,
+        steer: Number(a.steer) || 0, holdS: 0.3
+      };
+      const previousOut = out[out.length - 1];
+      if (previousOut && Math.hypot(previousOut.x - a.x, previousOut.z - a.z) < 0.05
+          && (!!previousOut.rev) === (!!a.rev)) {
+        Object.assign(previousOut, transitionPose);
+      } else {
+        out.push(transitionPose);
+      }
+      out.push({
+        x: a.x, z: a.z, h: a.h, rev: !!b.rev,
+        steer: Number(b.steer) || 0
+      });
       dist = stepM;
-      continue;
     }
     const seg = Math.hypot(b.x - a.x, b.z - a.z);
     if (seg < 1e-6) continue;
@@ -3170,6 +3256,52 @@ function analyzeManeuverPoses(poses) {
   return { lengthM, headingSweepDeg: sweepRad * 180 / Math.PI, gearChanges };
 }
 
+// A maneuver may briefly swing outside the mapped road edge, but it must not use
+// an unmapped lot/sidewalk as a sustained driving surface. This mirrors the hard
+// Safety Monitor threshold in distance form so the complete plan is checked
+// before replay starts; collision-only Hybrid A* search remains inexpensive.
+function maneuverSurfaceFeasible(poses, vc) {
+  if (!safetyRoadSurfaceGeo || !turf?.area || !turf?.difference || !Array.isArray(poses)) {
+    return { feasible: true, maxExcursionM: 0 };
+  }
+  const HARD_RATIO = 0.5;
+  const HARD_AREA_M2 = 8.0;
+  const SUSTAIN_M = 3.5;
+  let excursionM = 0;
+  let maxExcursionM = 0;
+  try {
+    for (let i = 0; i < poses.length; i++) {
+      const p = poses[i];
+      const footprint = truckFootprintFeatureForSafety({ x: p.x, z: p.z }, p.h, vc || {});
+      if (!footprint) continue;
+      const fpArea = Number(turf.area(footprint)) || 0;
+      if (fpArea <= 0) continue;
+      let within = false;
+      try {
+        within = typeof turf.booleanWithin === 'function'
+          && turf.booleanWithin(footprint, safetyRoadSurfaceGeo);
+      } catch (_e) { within = false; }
+      let outsideArea = 0;
+      if (!within) {
+        const outside = turf.difference(footprint, safetyRoadSurfaceGeo);
+        outsideArea = outside ? (Number(turf.area(outside)) || 0) : 0;
+      }
+      const gross = outsideArea > HARD_AREA_M2 && outsideArea / fpArea > HARD_RATIO;
+      const segM = i > 0
+        ? Math.hypot(p.x - poses[i - 1].x, p.z - poses[i - 1].z)
+        : 0;
+      excursionM = gross ? excursionM + segM : 0;
+      maxExcursionM = Math.max(maxExcursionM, excursionM);
+      if (excursionM >= SUSTAIN_M) {
+        return { feasible: false, reason: 'sustained_road_excursion', maxExcursionM };
+      }
+    }
+  } catch (_e) {
+    return { feasible: false, reason: 'surface_check_failed', maxExcursionM };
+  }
+  return { feasible: true, maxExcursionM };
+}
+
 // Hybrid A* を切り返しプランナとして実行する。成功時はワールドframeへ逆変換し
 // 0.5m間隔へ再サンプルしたポーズ列 {poses, source, metrics} を返す。失敗で null。
 // 座標規約は followerリセットと同一: 物理frame (x, y=-z, theta=π/2-h)、逆変換 h=π/2-theta, z=-y。
@@ -3210,8 +3342,11 @@ function planSwitchbackHybrid({ startPos, entryHeading, exitHeading, resumePos, 
         goalHeadingToleranceRad: 12 * Math.PI / 180,
         reverseCost: 0.4,
         gearSwitchCost: 8,
-        maxExpansions: 6000,
-        maxNodes: 12000
+        // A physically stopped approach point can be farther from the corner
+        // than the old late-trigger pose. Keep enough search budget for the
+        // longer, safer maneuver; the 25 m bounds still cap the state space.
+        maxExpansions: 20000,
+        maxNodes: 40000
       }
     });
   } catch (_e) {
@@ -3254,6 +3389,8 @@ function planCornerManeuver({ startPos, entryHeading, exitHeading, resumePos, vc
     let rejectReason = null;
     if (stats.headingSweepDeg > 270) rejectReason = 'sweep';
     else if (stats.lengthM > 45) rejectReason = 'length';
+    const surface = rejectReason ? null : maneuverSurfaceFeasible(plan.poses, vc);
+    if (!rejectReason && surface && !surface.feasible) rejectReason = surface.reason;
     recordManeuverDebug3D({
       source: c.source,
       sM: Math.round(sM),
@@ -3265,9 +3402,10 @@ function planCornerManeuver({ startPos, entryHeading, exitHeading, resumePos, vc
       rejectReason
     });
     if (!rejectReason) return { plan, source: c.source, stats };
-    console.info('[switchback] plan rejected (pirouette guard)', {
+    console.info('[switchback] plan rejected', {
       sM: Math.round(sM), source: c.source, rejectReason,
-      sweepDeg: Math.round(stats.headingSweepDeg), lengthM: round1(stats.lengthM)
+      sweepDeg: Math.round(stats.headingSweepDeg), lengthM: round1(stats.lengthM),
+      maxRoadExcursionM: round1(surface?.maxExcursionM || 0)
     });
   }
   return null;
@@ -3494,6 +3632,14 @@ function beginCornerSwitchback(sample, vc, livePose = null) {
     return false;
   }
   const plan = chosen.plan;
+  let debugRecordIndex = null;
+  for (let i = recoveryDebug3D.maneuvers.length - 1; i >= 0; i--) {
+    const record = recoveryDebug3D.maneuvers[i];
+    if (record?.accepted && record.source === chosen.source && Number(record.sM) === Math.round(sM)) {
+      debugRecordIndex = i;
+      break;
+    }
+  }
   recoveryBypassUntilM = Math.max(recoveryBypassUntilM, resumeStationM + 5);
   recoveryPlaybackCount3D += 1;
   recoveryPlayback3D = {
@@ -3501,7 +3647,14 @@ function beginCornerSwitchback(sample, vc, livePose = null) {
     sM,
     poses: plan.poses,
     poseIdx: 0,
-    poseDistAcc: 0,
+    segmentProgressM: 0,
+    speedAbsMS: 0,
+    vehicleConfig: { ...(vc || {}) },
+    finalPose: { ...plan.poses[plan.poses.length - 1] },
+    debugRecordIndex,
+    maxFrameStepM: 0,
+    maxGearChangeEntrySpeedMS: 0,
+    lastPlaybackPos: null,
     heading: entryHeading,
     exitHeading, // store exit heading for completion frame
     lateralM: 0,
@@ -3552,11 +3705,13 @@ function approachAngle(cur, target, maxStep) {
 function advanceRecoveryPlayback(dt) {
   const rp = recoveryPlayback3D;
   if (!rp) return null;
-  // K-turn v2: 事前検証済みポーズ列を低速で順に再生（位置・方位・操舵はポーズが持つ）
+  // K-turn v3: validated poses are a geometric path, not animation keyframes.
+  // Replay continuously by arc length, with longitudinal acceleration/braking
+  // and a full stop at every gear change.
   if (Array.isArray(rp.poses)) {
     if (!rp.poseDone) {
       const KTURN_SPEED_MS = 1.6;
-      const currentPose = rp.poses[rp.poseIdx];
+      let currentPose = rp.poses[rp.poseIdx];
       if (Number(currentPose?.holdS) > 0 && rp.holdPoseIdx !== rp.poseIdx) {
         rp.holdPoseIdx = rp.poseIdx;
         rp.holdRemainingS = Number(currentPose.holdS);
@@ -3575,26 +3730,124 @@ function advanceRecoveryPlayback(dt) {
           resumeStationM: rp.resumeStationM
         };
       }
-      rp.poseDistAcc = (rp.poseDistAcc || 0) + Math.max(0, Number(dt) || 0) * KTURN_SPEED_MS;
-      while (rp.poseDistAcc >= 0.5 && rp.poseIdx < rp.poses.length - 1) {
-        const next = rp.poses[rp.poseIdx + 1];
-        if (Number(next?.holdS) > 0) {
-          rp.poseIdx += 1;
-          rp.poseDistAcc = 0;
-          break;
-        }
-        rp.poseDistAcc -= 0.5;
+      // After a gear hold, consume its zero-length duplicate before computing
+      // the next stopping envelope. No distance is travelled by this state
+      // transition and the vehicle is already at zero speed.
+      while (rp.poseIdx < rp.poses.length - 1) {
+        const nextPose = rp.poses[rp.poseIdx + 1];
+        const zeroLength = Math.hypot(nextPose.x - currentPose.x, nextPose.z - currentPose.z) < 1e-9;
+        if (!zeroLength || Number(nextPose?.holdS) > 0) break;
         rp.poseIdx += 1;
+        rp.segmentProgressM = 0;
+        currentPose = nextPose;
       }
-      const p = rp.poses[rp.poseIdx];
+      // Distance remaining to the next mandatory stop (gear hold or path end).
+      let stopDistanceM = 0;
+      for (let i = rp.poseIdx; i < rp.poses.length - 1; i++) {
+        const a = rp.poses[i];
+        const b = rp.poses[i + 1];
+        const segM = Math.hypot(b.x - a.x, b.z - a.z);
+        stopDistanceM += i === rp.poseIdx
+          ? Math.max(0, segM - (Number(rp.segmentProgressM) || 0))
+          : segM;
+        if (Number(b?.holdS) > 0 || (!!a.rev) !== (!!b.rev)) break;
+      }
+      const vc = rp.vehicleConfig || {};
+      const gradeSample = sampleAutonomyAtProgress(Number(rp.sM) || progressM);
+      const gradePctRaw = Number(gradeSample?.brakeGradePct);
+      const gradePct = Number.isFinite(gradePctRaw)
+        ? gradePctRaw
+        : -Math.abs(Number(gradeSample?.gradePct) || 0);
+      const brakeMSS = effectiveBrakeDecelMSS({ gradePct, vehicleConfig: vc });
+      const accelMSS = effectiveAccelMSS({ gradePct, vehicleConfig: vc });
+      const braking = safetyMrmStop3D?.phase === 'BRAKING';
+      // Plan gear-stop approach with only 65% of available braking. The actual
+      // integrator still uses brakeMSS; this margin absorbs fixed-dt and pose
+      // spacing error instead of zeroing a residual speed at the gear boundary.
+      const envelopeBrakeMSS = brakeMSS * 0.65;
+      const stoppingCapMS = envelopeBrakeMSS > 1e-6
+        ? Math.sqrt(Math.max(0, 2 * envelopeBrakeMSS * Math.max(0, stopDistanceM - 0.08)))
+        : 0;
+      const desiredSpeedAbs = braking ? 0 : Math.min(KTURN_SPEED_MS, stoppingCapMS);
+      const prevSpeedAbs = Math.max(0, Number(rp.speedAbsMS) || 0);
+      const rate = desiredSpeedAbs >= prevSpeedAbs ? accelMSS : brakeMSS;
+      const maxDv = Math.max(0, rate) * Math.max(0, Number(dt) || 0);
+      rp.speedAbsMS = desiredSpeedAbs >= prevSpeedAbs
+        ? Math.min(desiredSpeedAbs, prevSpeedAbs + maxDv)
+        : Math.max(desiredSpeedAbs, prevSpeedAbs - maxDv);
+      let travelM = (prevSpeedAbs + rp.speedAbsMS) * 0.5 * Math.max(0, Number(dt) || 0);
+      // Resolve only the final numerical remainder after the vehicle has already
+      // reached the stopped-speed tolerance. Without this, a conservative
+      // stopping envelope can leave the player 2-8 cm before the hold forever.
+      if (rp.speedAbsMS <= 0.08 && stopDistanceM <= 0.1) {
+        travelM = Math.max(travelM, stopDistanceM);
+      }
+
+      while (travelM > 1e-9 && rp.poseIdx < rp.poses.length - 1) {
+        const a = rp.poses[rp.poseIdx];
+        const b = rp.poses[rp.poseIdx + 1];
+        const segM = Math.hypot(b.x - a.x, b.z - a.z);
+        if (segM < 1e-9) {
+          rp.poseIdx += 1;
+          rp.segmentProgressM = 0;
+          if (Number(b?.holdS) > 0) {
+            rp.maxGearChangeEntrySpeedMS = Math.max(
+              Number(rp.maxGearChangeEntrySpeedMS) || 0,
+              Number(rp.speedAbsMS) || 0
+            );
+            rp.speedAbsMS = 0;
+            break;
+          }
+          continue;
+        }
+        const remainM = Math.max(0, segM - (Number(rp.segmentProgressM) || 0));
+        if (travelM + 1e-9 < remainM) {
+          rp.segmentProgressM = (Number(rp.segmentProgressM) || 0) + travelM;
+          travelM = 0;
+        } else {
+          travelM = Math.max(0, travelM - remainM);
+          rp.poseIdx += 1;
+          rp.segmentProgressM = 0;
+          if (Number(b?.holdS) > 0) {
+            rp.maxGearChangeEntrySpeedMS = Math.max(
+              Number(rp.maxGearChangeEntrySpeedMS) || 0,
+              Number(rp.speedAbsMS) || 0
+            );
+            rp.speedAbsMS = 0;
+            break;
+          }
+        }
+      }
+
+      const a = rp.poses[rp.poseIdx];
+      const b = rp.poses[Math.min(rp.poseIdx + 1, rp.poses.length - 1)];
+      const segM = Math.hypot(b.x - a.x, b.z - a.z);
+      const u = segM > 1e-9 ? Math.max(0, Math.min(1, (Number(rp.segmentProgressM) || 0) / segM)) : 0;
+      const p = {
+        x: a.x + (b.x - a.x) * u,
+        z: a.z + (b.z - a.z) * u,
+        h: lerpAngleRad(a.h, b.h, u),
+        rev: u > 0 ? !!b.rev : !!a.rev,
+        steer: (Number(a.steer) || 0) + ((Number(b.steer) || 0) - (Number(a.steer) || 0)) * u
+      };
       const atEnd = rp.poseIdx >= rp.poses.length - 1;
-      if (atEnd) rp.poseDone = true;
+      if (atEnd) {
+        rp.poseDone = true;
+        rp.speedAbsMS = 0;
+      }
+      if (rp.lastPlaybackPos) {
+        rp.maxFrameStepM = Math.max(
+          Number(rp.maxFrameStepM) || 0,
+          Math.hypot(p.x - rp.lastPlaybackPos.x, p.z - rp.lastPlaybackPos.z)
+        );
+      }
+      rp.lastPlaybackPos = { x: p.x, z: p.z };
       progressM = Math.max(progressM, Number(rp.sM) || 0);
       return {
         kind: rp.kind || null,
         pos: { x: p.x, z: p.z },
         heading: p.h,
-        speedMS: atEnd ? 0 : (p.rev ? -KTURN_SPEED_MS : KTURN_SPEED_MS),
+        speedMS: atEnd ? 0 : (p.rev ? -rp.speedAbsMS : rp.speedAbsMS),
         reversing: !!p.rev,
         steeringAngle: atEnd ? 0 : Math.max(-0.6, Math.min(0.6, Number(p.steer) || 0)),
         forcePoseHeading: rp.kind === 'switchback',
@@ -3620,9 +3873,19 @@ function advanceRecoveryPlayback(dt) {
   autoDriveTargetOffsetM = rp.lateralM;
   // 引継ぎ直後のヘディング slew が復旧終端の位置を基準に連続するよう、直前位置を resume に合わせる。
   lastTruckPos = { x: resumePos.x, z: resumePos.z };
+  const runtimeRecord = Number.isInteger(rp.debugRecordIndex)
+    ? recoveryDebug3D.maneuvers[rp.debugRecordIndex]
+    : null;
+  if (runtimeRecord) {
+    runtimeRecord.maxFrameStepM = Math.round((Number(rp.maxFrameStepM) || 0) * 1000) / 1000;
+    runtimeRecord.maxGearChangeEntrySpeedMS = Math.round(
+      (Number(rp.maxGearChangeEntrySpeedMS) || 0) * 1000
+    ) / 1000;
+  }
   recoveryPlayback3D = null;
-  const doneHeading = rp.kind === 'switchback' && Number.isFinite(Number(rp.exitHeading))
-    ? Number(rp.exitHeading)
+  pendingSwitchback3D = null;
+  const doneHeading = rp.kind === 'switchback' && Number.isFinite(Number(rp.finalPose?.h))
+    ? Number(rp.finalPose.h)
     : _routeHeadingAt(resumeM);
   return {
     kind: rp.kind || null,
@@ -4108,12 +4371,26 @@ export function playThree3D(speedKmh = 18) {
         ? Math.atan2(pathM[1].y - pathM[0].y, pathM[1].x - pathM[0].x)
         : 0,
       progressS: 0,
-      // 縦方向動力学: plannerサンプルに焼き込まれた勾配%を追従器の制動/加速計算へ渡す
-      // （vehicleRiskModel.effectiveBrakeDecelMSS と同一の真実源。データ無し道路は0=従来挙動）。
+      // The compiled DEM currently stores magnitude only. Consume the planner's
+      // explicit conservative downhill grade so planning and replay cannot use
+      // opposite signs for the same sample.
       gradeAtM: (sM) => {
-        const g = Number(sampleAutonomyAtProgress(sM)?.gradePct);
-        return Number.isFinite(g) ? g : 0;
-      }
+        const sample = sampleAutonomyAtProgress(sM);
+        const brakeGrade = Number(sample?.brakeGradePct);
+        if (Number.isFinite(brakeGrade)) return brakeGrade;
+        const magnitude = Number(sample?.gradePct);
+        return Number.isFinite(magnitude) ? -Math.abs(magnitude) : 0;
+      },
+      // Live follower performs the same backward braking envelope used by the
+      // planner. MRM dynamically lowers this to zero and is therefore decelerated
+      // by the bicycle integrator instead of freezing the rendered truck.
+      speedLimitAtM: (sM) => {
+        if (safetyMrmStop3D?.phase === 'BRAKING') return 0;
+        return previewAutonomySpeedLimitAtProgress(sM, simConfig.vehicleSpeed);
+      },
+      // Planner samples are 3 m apart; a 2 m preview grid can discover a sharp
+      // curve limit with almost no integration margin. Use 0.5 m online spacing.
+      speedLimitPreviewIntervalM: 0.5
     });
     drivePoses = [];
     driveTimeS = 0;
@@ -4125,11 +4402,13 @@ export function playThree3D(speedKmh = 18) {
     driveFollower3D = null;
     drivePoseMode = false;
     driveFollowerDone3D = false;
+    fallbackDriveSpeedMS = 0;
     console.warn('[three3d] live physics initialization failed, using guarded route fallback:', e?.message || e);
   }
   if (routeXZ.length < 2) return;
 
   progressM = 0;
+  fallbackDriveSpeedMS = 0;
   playing = true;
   followCam = true;
   lastTs = 0;
@@ -4145,6 +4424,7 @@ export function playThree3D(speedKmh = 18) {
   autoDriveWasOffset = false;
   autoDriveWasDanger = false;
   recoveryPlayback3D = null;
+  pendingSwitchback3D = null;
   recoveryHandledKeys3D = new Set();
   switchbackHandled3D = new Set();
   switchbackHandledZones3D = [];
@@ -4183,7 +4463,35 @@ function startRenderLoop() {
       const speedMS = playThree3D._speedMS || 5;
       const total = playThree3D._total || routeCum[routeCum.length - 1];
       const preAutonomySample = sampleAutonomyAtProgress(progressM);
-      const preLimit = autonomyPlaybackLimit(preAutonomySample, speedMS);
+      const preState = store.getState();
+      const liveSpeedAbs = (() => {
+        try { return Math.abs(Number(driveFollower3D?.getState?.()?.speedMS) || fallbackDriveSpeedMS || 0); } catch (_e) { return 0; }
+      })();
+      const preGradeRaw = Number(preAutonomySample?.brakeGradePct);
+      const preGradePct = Number.isFinite(preGradeRaw)
+        ? preGradeRaw
+        : -Math.abs(Number(preAutonomySample?.gradePct) || 0);
+      const approachDecelMSS = effectiveBrakeDecelMSS({
+        gradePct: preGradePct,
+        vehicleConfig: preState?.vehicleConfig || {}
+      });
+      const switchbackLookaheadM = approachDecelMSS > 1e-6
+        ? Math.min(25, Math.max(8, liveSpeedAbs * liveSpeedAbs / (2 * approachDecelMSS) + 4))
+        : 25;
+      if (!pendingSwitchback3D && !recoveryPlayback3D && !safetyMrmStop3D
+          && recoveryBypassUntilM <= progressM + 0.25) {
+        const upcoming = findUpcomingSwitchbackSample(progressM, switchbackLookaheadM);
+        const stationM = Number(upcoming?.sM);
+        const terminalGrace = total > 0 && Number.isFinite(stationM)
+          && stationM >= total - SAFETY_ENDPOINT_GRACE_M;
+        if (upcoming && !terminalGrace) pendingSwitchback3D = { sample: upcoming };
+      }
+      const mrmBraking = safetyMrmStop3D?.phase === 'BRAKING';
+      const switchbackBraking = !!pendingSwitchback3D && !recoveryPlayback3D;
+      const sampledPreLimit = autonomyPlaybackLimit(preAutonomySample, speedMS);
+      const preLimit = mrmBraking || switchbackBraking
+        ? { scale: 0, allowedMS: 0, mode: 'STOP' }
+        : sampledPreLimit;
       const driveDt = simDt;
       let basePos = null;
       let basePosAlreadyOffset = false;
@@ -4191,6 +4499,7 @@ function startRenderLoop() {
       let poseSpeedMS = speedMS;
       let poseSteer = 0;
       let forceHeadingNow = false;
+      let brakingUnavailableNow = false;
       const bypassPlaybackActive = !recoveryPlayback3D && recoveryBypassUntilM > progressM + 0.25;
       if (driveFollower3D && !recoveryPlayback3D) {
         const pose = driveFollower3D.step(driveDt, { targetSpeedMS: preLimit.allowedMS });
@@ -4200,35 +4509,52 @@ function startRenderLoop() {
         poseSteer = Number(pose.steeringAngle) || 0;
         progressM = Math.min(total, Number(pose.progressS) || progressM);
         driveFollowerDone3D = !!pose.done;
+        brakingUnavailableNow = !!pose.nonStoppable;
       } else if (recoveryPlayback3D) {
         basePos = lastTruckPos || _sampleRouteAt(progressM);
         heading = truckRenderHeading;
         poseSpeedMS = 0;
         poseSteer = 0;
       } else {
-        progressM = Math.min(total, progressM + Math.min(speedMS, preLimit.allowedMS) * simDt);
+        const fallbackState = store.getState();
+        const fallbackGradeRaw = Number(preAutonomySample?.brakeGradePct);
+        const fallbackGradePct = Number.isFinite(fallbackGradeRaw)
+          ? fallbackGradeRaw
+          : -Math.abs(Number(preAutonomySample?.gradePct) || 0);
+        const targetFallbackMS = Math.min(speedMS, preLimit.allowedMS);
+        const rateMSS = targetFallbackMS < fallbackDriveSpeedMS
+          ? effectiveBrakeDecelMSS({ gradePct: fallbackGradePct, vehicleConfig: fallbackState?.vehicleConfig || {} })
+          : effectiveAccelMSS({ gradePct: fallbackGradePct, vehicleConfig: fallbackState?.vehicleConfig || {} });
+        const dv = Math.max(0, rateMSS) * simDt;
+        fallbackDriveSpeedMS = targetFallbackMS < fallbackDriveSpeedMS
+          ? Math.max(targetFallbackMS, fallbackDriveSpeedMS - dv)
+          : Math.min(targetFallbackMS, fallbackDriveSpeedMS + dv);
+        brakingUnavailableNow = targetFallbackMS + 0.02 < fallbackDriveSpeedMS && rateMSS <= 1e-6;
+        progressM = Math.min(total, progressM + fallbackDriveSpeedMS * simDt);
         basePos = _sampleRouteAt(progressM);
         heading = _routeHeadingAt(progressM);
+        poseSpeedMS = fallbackDriveSpeedMS;
       }
       autonomyCurrentSample = sampleAutonomyAtProgress(progressM) || preAutonomySample;
-      const currentLimit = autonomyPlaybackLimit(autonomyCurrentSample, speedMS);
+      const sampledCurrentLimit = autonomyPlaybackLimit(autonomyCurrentSample, speedMS);
+      const currentLimit = safetyMrmStop3D?.phase === 'BRAKING' || pendingSwitchback3D
+        ? { scale: 0, allowedMS: 0, mode: 'STOP' }
+        : sampledCurrentLimit;
       autonomyCurrentLimit = currentLimit;
-      poseSpeedMS = Math.min(poseSpeedMS, currentLimit.allowedMS);
+      // Speed is measured state. The target limit is fed into the live or guarded
+      // integrator above; never overwrite telemetry while the truck is braking.
       const currentState = store.getState();
       const vc = currentState.vehicleConfig;
       // 旧 reverse/replan recovery は「後退→横へ平行移動→復帰」の補間で、車両物理に反する。
       // 地上障害物は localAvoidance が作った回避経路を kinematic bicycle で走らせる。
       // ここでは旧式の横移動再生を発火させない。
-      // 切り返し（K-turn）: スイング超過の急コーナーは徐行で突っ込まず、
-      // 手前で一旦停止→後退でヘディングを出口へ振ってから再進入する（planner推奨フラグ）。
-      const switchbackStationM = Number(autonomyCurrentSample?.sM);
-      const terminalSwitchbackGrace = total > 0 && Number.isFinite(switchbackStationM)
-        && switchbackStationM >= total - SAFETY_ENDPOINT_GRACE_M;
-      if (!recoveryPlayback3D && autonomyCurrentSample?.switchbackRecommended
-          && !bypassPlaybackActive
-          && !terminalSwitchbackGrace
-          && progressM >= (Number(autonomyCurrentSample.sM) || 0) - 4) {
-        beginCornerSwitchback(autonomyCurrentSample, vc, { pos: basePos, heading });
+      // Switchback planning starts only after the live bicycle has physically
+      // stopped at an approach point selected from the upcoming planner sample.
+      if (pendingSwitchback3D && !recoveryPlayback3D && !bypassPlaybackActive
+          && Math.abs(Number(poseSpeedMS) || 0) <= 0.08) {
+        const pendingSample = pendingSwitchback3D.sample;
+        pendingSwitchback3D = null;
+        beginCornerSwitchback(pendingSample, vc, { pos: basePos, heading });
       }
       const recoveryPose = advanceRecoveryPlayback(simDt);
       const manualRecoveryActive = recoveryPose && !recoveryPose.done;
@@ -4320,6 +4646,14 @@ function startRenderLoop() {
         simDt,
         collision: monitorHit
       });
+      if (!safetyMrmStop3D && brakingUnavailableNow) {
+        triggerMrmStop3D('braking_unavailable', {
+          speedMS: Math.abs(Number(poseSpeedMS) || 0),
+          brakingAvailable: false,
+          progressM: Math.round((Number(progressM) || 0) * 10) / 10,
+          sample: autonomyCurrentSample || null
+        });
+      }
       if (
         !safetyMrmStop3D
         && currentLimit.mode === 'STOP'
@@ -4329,6 +4663,7 @@ function startRenderLoop() {
         && !isRecoveryBypassActive(autonomyCurrentSample, progressM)
       ) {
         triggerMrmStop3D('planner_stop_unresolved', {
+          speedMS: Math.abs(Number(poseSpeedMS) || 0),
           progressM: Math.round((Number(progressM) || 0) * 10) / 10,
           sample: autonomyCurrentSample || null,
           recoveryStatus: autonomyReport3D?.summary?.recoveryStatus || null
@@ -4351,6 +4686,7 @@ function startRenderLoop() {
         && verifyAheadBlocked(progressM, vc)
       ) {
         triggerMrmStop3D('verified_blocker_ahead', {
+          speedMS: Math.abs(Number(poseSpeedMS) || 0),
           progressM: Math.round((Number(progressM) || 0) * 10) / 10,
           forwardClearanceM: Math.round(monitoredForwardClrM * 10) / 10,
           blockerId: autonomyCurrentSample?.blockerId || null,
@@ -4371,12 +4707,16 @@ function startRenderLoop() {
         stallTimerS += simDt;
         if (stallTimerS >= 5) {
           triggerMrmStop3D('stalled_no_progress', {
+            speedMS: Math.abs(Number(poseSpeedMS) || 0),
             progressM: Math.round((Number(progressM) || 0) * 10) / 10,
             sample: autonomyCurrentSample || null
           });
         }
       } else {
         stallTimerS = 0;
+      }
+      if (safetyMrmStop3D?.phase === 'BRAKING' && Math.abs(Number(poseSpeedMS) || 0) <= 0.08) {
+        finishMrmStop3D();
       }
       updateAutonomyHud3D(autonomyCurrentSample, currentLimit, poseSpeedMS);
 

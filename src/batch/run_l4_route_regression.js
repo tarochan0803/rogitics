@@ -127,7 +127,7 @@ async function runRoute(browser, baseUrl, worldFileUrl, cand, { speedKmh, timeou
     while (Date.now() < deadline) {
       await sleep(1000);
       last = await page.evaluate(() => window.index3DGetSafetyMetrics());
-      if (last?.status === 'MRM_STOP' || last?.status === 'VIOLATION') break;
+      if (last?.status === 'MRM_STOP' || last?.status === 'MRM_FAILED' || last?.status === 'VIOLATION') break;
       if ((last?.tick || 0) === prevTick) {
         stableFor += 1;
         if (stableFor >= 4) break; // 進捗停止=再生完了とみなす

@@ -369,19 +369,31 @@ class RegulationRefreshService:
 
     def _source_view(self, metadata: Dict[str, Any], stale_after: Optional[int], expired_after: Optional[int]) -> Dict[str, Any]:
         success, error_info = _parse_time(metadata.get("lastSuccessAt")), metadata.get("lastError")
+        has_error = isinstance(error_info, dict)
         if success is None:
             freshness, age = "missing", None
         else:
             age = max(0, int((self.now() - success).total_seconds()))
             freshness = "expired" if expired_after is not None and age >= expired_after else "stale" if stale_after is not None and age >= stale_after else "fresh"
-        state = (
-            "error" if isinstance(error_info, dict)
-            else "stale" if metadata.get("reviewRequired") or metadata.get("notConfigured")
-            else freshness
-        )
+        # State derivation prioritizes the last-known-good freshness over transient fetch
+        # errors: a single upstream timeout must not flip a still-fresh LKG into "error"
+        # (that would fail closed to "requires confirmation"). When an LKG exists, the
+        # latest fetch error is surfaced only through `degraded`/`error`, never `state`.
+        # A continuing error simply lets freshness age into "stale"/"expired" naturally,
+        # which is the correct escalation. Intentional review/not-configured escalation to
+        # "stale" is preserved.
+        if success is None:
+            state = "error" if has_error else freshness  # no LKG: an error is authoritative
+        elif metadata.get("reviewRequired") or metadata.get("notConfigured"):
+            state = "stale"
+        else:
+            state = freshness
+        # degraded == serving a fresh/aged last-known-good while the latest fetch failed.
+        degraded = success is not None and has_error
         view: Dict[str, Any] = {
             "state": state,
             "freshness": freshness,
+            "degraded": degraded,
             "checkedAt": metadata.get("checkedAt"),
             "lastSuccessAt": metadata.get("lastSuccessAt"),
             "fetchedAt": metadata.get("lastSuccessAt"),
@@ -389,7 +401,7 @@ class RegulationRefreshService:
             "stale": freshness == "stale",
             "expired": freshness == "expired",
             "hasLastKnownGood": success is not None,
-            "error": error_info.get("message") if isinstance(error_info, dict) else None,
+            "error": error_info.get("message") if has_error else None,
         }
         for field in ("sha256", "elementCount", "lastEndpoint", "queryVersion", "sourceUpdatedAt", "previousSha256", "pageHash", "previousPageHash", "lastModified", "sourceUrl", "catalogUrl", "targetMonth", "releaseDay", "artifactCount", "changeDetected", "notConfigured", "dataStatus"):
             if field in metadata:
@@ -402,6 +414,9 @@ class RegulationRefreshService:
 
     @staticmethod
     def _overall(sources: Iterable[Dict[str, Any]]) -> str:
+        # "error" only when a source has no data at all (missing) or its own state is
+        # "error" (also missing-LKG). A degraded-but-fresh source keeps state="fresh",
+        # so a transient upstream failure never worsens the overall verdict here.
         items = list(sources)
         if any(item["freshness"] == "missing" for item in items): return "error"
         if any(item["freshness"] == "expired" for item in items): return "expired"
@@ -460,13 +475,17 @@ class RegulationRefreshService:
             return self._response(index, key, include_snapshot=True, attempts=attempts)
 
     def status(self, bbox: Any) -> Dict[str, Any]:
+        # Lock-free freshness poll: index.json is written atomically (os.replace), so a
+        # read always sees a coherent last-known-good snapshot. Taking self._lock would
+        # let an in-flight refresh (which holds the lock across ~90s of network I/O) block
+        # the UI status poll. We read the file and compute the view; the synthesized AOI
+        # placeholder below is local to this call only (never registered/persisted).
         normalized = validate_bbox(bbox, max_area_km2=self.max_area_km2)
         key = _bbox_id(normalized)
-        with self._lock:
-            index = self._load_index()
-            if key not in index["aois"]:
-                index["aois"][key] = {"bbox": list(normalized), "osm": {}}
-            return self._response(index, key)
+        index = self._load_index()
+        if key not in index["aois"]:
+            index["aois"][key] = {"bbox": list(normalized), "osm": {}}
+        return self._response(index, key)
 
     def run_scheduled_once(self) -> None:
         with self._refresh_lock, self._lock:

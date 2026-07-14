@@ -1,14 +1,22 @@
 import json
+import os
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer
 from pathlib import Path
 from urllib import error, request
 
-import web_server
-from server.regulation_refresh import (
+# Allow both `python3 -m server.test_regulation_refresh` (run from the project root) and
+# `python3 server/test_regulation_refresh.py` (which otherwise only puts server/ on the
+# path) by self-inserting the project root so `web_server` and `server.*` both import.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import web_server  # noqa: E402
+from server.regulation_refresh import (  # noqa: E402
     JARTIC_OPEN_DATA_URL,
     JARTIC_CATALOG_URL,
     NPA_SPEC_URL,
@@ -59,6 +67,25 @@ class FakeUpstream:
         if url == JARTIC_CATALOG_URL:
             return self.jartic, {"last-modified": "Mon, 13 Jul 2026 00:00:00 GMT"}
         raise AssertionError(url)
+
+
+class BlockingUpstream:
+    """Signals when a refresh has entered a network fetch, then blocks until released.
+
+    Used to deterministically reproduce a refresh holding the service lock across slow
+    network I/O so a concurrent status() poll can be timed.
+    """
+
+    def __init__(self):
+        self.base = FakeUpstream()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, url, method, data, timeout, max_bytes):
+        self.entered.set()
+        if not self.release.wait(timeout=10):
+            raise RegulationFetchError("blocking upstream was never released")
+        return self.base(url, method, data, timeout, max_bytes)
 
 
 class RegulationRefreshServiceTest(unittest.TestCase):
@@ -115,7 +142,11 @@ class RegulationRefreshServiceTest(unittest.TestCase):
         }]).encode("utf-8")
         self.clock.advance(minutes=16)
         result = self.service.refresh(BBOX, force=True)
-        self.assertEqual(result["sources"]["osm"]["state"], "error")
+        # A transient fetch failure over a still-fresh LKG stays "fresh" (not "error"),
+        # but the failure is surfaced via degraded/error so it never fails open silently.
+        self.assertEqual(result["sources"]["osm"]["state"], "fresh")
+        self.assertTrue(result["sources"]["osm"]["degraded"])
+        self.assertIsNotNone(result["sources"]["osm"]["error"])
         self.assertTrue(result["sources"]["osm"]["hasLastKnownGood"])
         self.assertEqual(raw_file.read_bytes(), original_raw)
         self.assertTrue(result["sources"]["npaSpec"]["reviewRequired"])
@@ -147,6 +178,69 @@ class RegulationRefreshServiceTest(unittest.TestCase):
             validate_bbox([139.0, 35.0, 140.0, 36.0])
         with self.assertRaises(RegulationInputError):
             self.service.refresh(BBOX, force="yes")
+
+    def test_fresh_lkg_survives_transient_error_with_degraded_visibility(self):
+        # Bug 1: a single Overpass timeout over a still-fresh last-known-good must NOT
+        # flip the source to "error" (which would fail closed to "requires confirmation").
+        self.service.refresh(BBOX, force=True)  # establish LKG
+        self.upstream.fail_overpass = True
+        self.clock.advance(minutes=24)          # well inside the 6h stale window
+        result = self.service.refresh(BBOX, force=True)
+        osm = result["sources"]["osm"]
+        self.assertEqual(osm["freshness"], "fresh")
+        self.assertEqual(osm["state"], "fresh")
+        self.assertTrue(osm["degraded"])
+        self.assertEqual(osm["error"], "offline")
+        self.assertTrue(osm["hasLastKnownGood"])
+        self.assertEqual(osm["elementCount"], 1)
+        # A degraded-but-fresh source must not drag `overall` into "error": overall of a
+        # degraded OSM alongside otherwise-fresh sources is "fresh".
+        fresh = {"state": "fresh", "freshness": "fresh"}
+        self.assertEqual(self.service._overall((osm, dict(fresh), dict(fresh))), "fresh")
+        # End-to-end, jartic is intentionally notConfigured -> "stale", so overall is a
+        # fail-open "stale" (WARNING), crucially no longer "error"/UNKNOWN.
+        self.assertEqual(result["overall"], "stale")
+
+    def test_missing_lkg_with_error_is_overall_error(self):
+        # Bug 1: with no last-known-good at all, an error IS authoritative.
+        self.upstream.fail_overpass = True
+        result = self.service.refresh(BBOX, force=True)
+        osm = result["sources"]["osm"]
+        self.assertFalse(osm["hasLastKnownGood"])
+        self.assertEqual(osm["state"], "error")
+        self.assertFalse(osm["degraded"])  # nothing to serve, so not "degraded"
+        self.assertEqual(result["overall"], "error")
+
+    def test_continuing_error_escalates_to_stale_after_threshold(self):
+        # Bug 1: a persistent error lets the LKG age past the stale threshold, which is the
+        # correct escalation (fresh -> stale -> expired), independent of lastError.
+        self.service.refresh(BBOX, force=True)
+        self.upstream.fail_overpass = True
+        self.clock.advance(hours=7)  # beyond the 6h stale threshold
+        result = self.service.refresh(BBOX, force=True)
+        osm = result["sources"]["osm"]
+        self.assertEqual(osm["freshness"], "stale")
+        self.assertEqual(osm["state"], "stale")
+        self.assertTrue(osm["hasLastKnownGood"])
+        self.assertIsNotNone(osm["error"])
+        self.assertEqual(result["overall"], "stale")
+
+    def test_status_poll_is_not_blocked_by_in_flight_refresh(self):
+        # Bug 2: status() must stay responsive while a refresh holds the service lock
+        # across slow network I/O.
+        blocker = BlockingUpstream()
+        service = RegulationRefreshService(Path(self.temp.name), fetch=blocker, now=self.clock.now)
+        worker = threading.Thread(target=lambda: service.refresh(BBOX, force=True), daemon=True)
+        worker.start()
+        self.assertTrue(blocker.entered.wait(timeout=5), "refresh never reached a network fetch")
+        started = time.monotonic()
+        status = service.status(BBOX)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, f"status() blocked {elapsed:.2f}s behind a locked refresh")
+        self.assertIn("overall", status)
+        blocker.release.set()
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive())
 
 
 class RegulationHttpContractTest(unittest.TestCase):

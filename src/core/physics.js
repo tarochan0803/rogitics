@@ -20,6 +20,12 @@ function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
+function hasOperationalMass(config) {
+  return [config?.actualGrossWeightT, config?.grossWeight, config?.vehicleWeight, config?.weight]
+    .map(Number)
+    .some((weight) => Number.isFinite(weight) && weight > 0);
+}
+
 function buildPathData(pathM) {
   const segments = [];
   let totalLength = 0;
@@ -76,8 +82,11 @@ export function stepKinematicBicycle(config = {}, state = {}, control = {}, dt =
   const wheelBase = Math.max(0.5, Number(footprint.wheelBase) || 3.4);
   const maxSteer = d2r(Math.max(1, Number(config.maxSteeringAngle) || 38));
   const steerRate = Math.max(0.05, Number(config.maxSteeringRateRadS) || 0.45);
-  const maxAccel = Math.max(0.1, Number(config.maxAccel) || 1.2);
-  const maxDecel = Math.max(0.2, Number(config.maxDecel) || 2.8);
+  const configuredAccel = Number(config.maxAccel);
+  const configuredDecel = Number(config.maxDecel);
+  const maxAccel = Number.isFinite(configuredAccel) ? Math.max(0, configuredAccel) : 1.2;
+  // Zero is meaningful: a wet, steep downhill can have no net stopping capability.
+  const maxDecel = Number.isFinite(configuredDecel) ? Math.max(0, configuredDecel) : 2.8;
 
   let x = Number(state.x) || 0;
   let y = Number(state.y) || 0;
@@ -147,8 +156,9 @@ export function createKinematicPathFollower(config = {}, pathM = [], opts = {}) 
   // 消費する。未指定かつ乾燥なら dynamicLong=false で従来挙動（config.maxDecel/maxAccel をそのまま使用）。
   // 指定時は「平坦・乾燥の基準」からの乗算スケールで config 値を尊重したまま勾配・路面を反映する。
   const gradeFn = typeof opts.gradeAtM === 'function' ? opts.gradeAtM : null;
+  const speedLimitAtM = typeof opts.speedLimitAtM === 'function' ? opts.speedLimitAtM : null;
   const surfaceCond = String(config?.surfaceCondition || '').toLowerCase() === 'wet' ? 'wet' : 'dry';
-  const dynamicLong = !!gradeFn || surfaceCond === 'wet';
+  const dynamicLong = !!gradeFn || surfaceCond === 'wet' || hasOperationalMass(config);
   const baseBrakeMSS = effectiveBrakeDecelMSS({ gradePct: 0, surface: 'dry' });
   const baseAccelMSS = effectiveAccelMSS({ gradePct: 0 });
   const initialTheta = Number.isFinite(Number(opts.theta)) ? Number(opts.theta) : getInitialHeading(points);
@@ -173,6 +183,86 @@ export function createKinematicPathFollower(config = {}, pathM = [], opts = {}) 
     state.progressS = Math.max(state.progressS, projection.s);
     state.lateralErrorM = Math.sqrt(Math.max(0, projection.distSq));
     return projection;
+  };
+
+  const longitudinalLimitsAtS = (s) => {
+    const configuredDecel = Number(config.maxDecel);
+    const configuredAccel = Number(config.maxAccel);
+    const baseConfiguredDecel = Number.isFinite(configuredDecel) ? Math.max(0, configuredDecel) : 2.8;
+    const baseConfiguredAccel = Number.isFinite(configuredAccel) ? Math.max(0, configuredAccel) : 1.2;
+    if (!dynamicLong) {
+      return {
+        maxDecel: baseConfiguredDecel,
+        maxAccel: baseConfiguredAccel
+      };
+    }
+    const gp = gradeFn ? Number(gradeFn(s)) : 0;
+    const gpSafe = Number.isFinite(gp) ? gp : 0;
+    // Explicit limits are already calibrated for this vehicle. Applying the
+    // gross-weight factor again would double-derate them.
+    const brakeVehicleConfig = Number.isFinite(configuredDecel) ? null : config;
+    const accelVehicleConfig = Number.isFinite(configuredAccel) ? null : config;
+    const brakeScale = effectiveBrakeDecelMSS({
+      gradePct: gpSafe,
+      surface: surfaceCond,
+      vehicleConfig: brakeVehicleConfig
+    }) / baseBrakeMSS;
+    const accelScale = effectiveAccelMSS({ gradePct: gpSafe, vehicleConfig: accelVehicleConfig }) / baseAccelMSS;
+    return {
+      maxDecel: baseConfiguredDecel * brakeScale,
+      maxAccel: baseConfiguredAccel * accelScale
+    };
+  };
+
+  const limitedSpeedAtS = (s, fallback) => {
+    if (!speedLimitAtM) return fallback;
+    try {
+      const limited = Number(speedLimitAtM(s));
+      return Number.isFinite(limited) && limited >= 0 ? Math.min(fallback, limited) : fallback;
+    } catch (_err) {
+      return fallback;
+    }
+  };
+
+  const speedLimitEnvelope = (sNow, baseTargetSpeed, speedMS) => {
+    if (!speedLimitAtM) return baseTargetSpeed;
+    const intervalM = clamp(Number(opts.speedLimitPreviewIntervalM) || 2, 0.5, 10);
+    const configuredPreviewM = Number(opts.speedLimitPreviewM);
+    const currentDecel = longitudinalLimitsAtS(sNow).maxDecel;
+    const brakingPreviewM = currentDecel > 1e-6
+      ? (speedMS * speedMS) / (2 * currentDecel) + 15
+      : 120;
+    const previewM = Math.min(
+      Math.max(0, pathData.totalLength - sNow),
+      Math.max(30, Number.isFinite(configuredPreviewM) ? configuredPreviewM : 0, brakingPreviewM)
+    );
+    const samples = [{ s: sNow, limit: limitedSpeedAtS(sNow, baseTargetSpeed) }];
+    for (let ds = intervalM; ds < previewM; ds += intervalM) {
+      const s = Math.min(pathData.totalLength, sNow + ds);
+      samples.push({ s, limit: limitedSpeedAtS(s, baseTargetSpeed) });
+    }
+    const endS = Math.min(pathData.totalLength, sNow + previewM);
+    if (samples[samples.length - 1].s < endS - 1e-6) {
+      samples.push({ s: endS, limit: limitedSpeedAtS(endS, baseTargetSpeed) });
+    }
+
+    let allowed = samples[samples.length - 1].limit;
+    for (let i = samples.length - 2; i >= 0; i--) {
+      const fromS = samples[i].s;
+      const toS = samples[i + 1].s;
+      const midS = (fromS + toS) * 0.5;
+      // A single interval uses its worst available braking, not the optimistic current grade.
+      const intervalDecel = Math.min(
+        longitudinalLimitsAtS(fromS).maxDecel,
+        longitudinalLimitsAtS(midS).maxDecel,
+        longitudinalLimitsAtS(toS).maxDecel
+      );
+      const reachable = intervalDecel > 1e-6
+        ? Math.sqrt(Math.max(0, allowed * allowed + 2 * intervalDecel * (toS - fromS)))
+        : allowed;
+      allowed = Math.min(samples[i].limit, reachable);
+    }
+    return allowed;
   };
 
   const reset = (pose = {}) => {
@@ -207,20 +297,13 @@ export function createKinematicPathFollower(config = {}, pathM = [], opts = {}) 
     let targetSpeedMS = Number.isFinite(Number(command.targetSpeedMS))
       ? Math.max(0, Number(command.targetSpeedMS))
       : Math.max(0, Number(config.vehicleSpeed) || 3.5);
-    // 縦方向動力学: 現在の進行距離での勾配・路面から maxDecel/maxAccel をスケール。
-    // dynamicLong=false（gradeAtM/surface 未指定・乾燥）なら stepConfig=config で従来と完全一致。
-    let stepConfig = config;
-    let maxDecel = Math.max(0.2, Number(config.maxDecel) || 2.8);
-    if (dynamicLong) {
-      const gp = gradeFn ? Number(gradeFn(state.progressS)) : 0;
-      const gpSafe = Number.isFinite(gp) ? gp : 0;
-      const brakeScale = effectiveBrakeDecelMSS({ gradePct: gpSafe, surface: surfaceCond }) / baseBrakeMSS;
-      const accelScale = effectiveAccelMSS({ gradePct: gpSafe }) / baseAccelMSS;
-      maxDecel = Math.max(0.2, maxDecel * brakeScale);
-      stepConfig = { ...config, maxDecel, maxAccel: Math.max(0.1, (Number(config.maxAccel) || 1.2) * accelScale) };
-    }
+    // dynamicLong=false（gradeAtM/surface/load 未指定・乾燥）なら stepConfig=config で従来と完全一致。
+    const limits = longitudinalLimitsAtS(state.progressS);
+    const maxDecel = limits.maxDecel;
+    const stepConfig = dynamicLong ? { ...config, ...limits } : config;
     const stoppingCap = Math.sqrt(Math.max(0, 2 * maxDecel * Math.max(0, remainingM - 0.35)));
     targetSpeedMS = Math.min(targetSpeedMS, stoppingCap);
+    targetSpeedMS = Math.min(targetSpeedMS, speedLimitEnvelope(state.progressS, targetSpeedMS, Math.abs(state.speedMS)));
     if (remainingM <= 0.35) targetSpeedMS = 0;
 
     state = stepKinematicBicycle(stepConfig, state, { targetSpeedMS, targetSteeringAngle }, dt);
@@ -232,7 +315,9 @@ export function createKinematicPathFollower(config = {}, pathM = [], opts = {}) 
       targetSteeringAngle,
       targetSpeedMS,
       remainingM: Math.max(0, pathData.totalLength - state.progressS),
-      projectionS: projection?.s ?? state.progressS
+      projectionS: projection?.s ?? state.progressS,
+      brakingAvailable: maxDecel > 1e-6,
+      nonStoppable: maxDecel <= 1e-6 && Math.abs(state.speedMS) > targetSpeedMS + 0.02
     };
   };
 
@@ -267,7 +352,7 @@ export function simulatePathPoses(config, pathM, strideMeters, opts = {}) {
   // 出力は従来と bit 一致（後方互換）。純関数なら勾配ありでも決定論を保つ。
   const gradeAtM = typeof opts.gradeAtM === 'function' ? opts.gradeAtM : null;
   const surfaceCond = String(config?.surfaceCondition || '').toLowerCase() === 'wet' ? 'wet' : 'dry';
-  const dynamicLong = !!gradeAtM || surfaceCond === 'wet';
+  const dynamicLong = !!gradeAtM || surfaceCond === 'wet' || hasOperationalMass(config);
   // 平坦・乾燥の基準（スケール分母）。flat-dry では numerator/denominator=1.0 で固定係数に厳密一致し、
   // gradeAtM=()=>0 でも省略時と bit 一致する（後方互換）。
   const baseBrakeMSS = effectiveBrakeDecelMSS({ gradePct: 0, surface: 'dry' });
@@ -505,7 +590,9 @@ export function simulatePathPoses(config, pathM, strideMeters, opts = {}) {
       // 突っ込み過ぎる。前方 s_i の各制限に対し「今から a_brake で減速して間に合う最大速度」
       //   v_allow(s_i) = √(limit(s_i)² + 2·a_brake·(s_i − s_now))
       // を評価し、その最小を採用する（standard backward pass）。制限関数が無ければスキップ。
-      const horizonM = Math.max(15, (v * v) / (2 * aBrakeTick) + 10);
+      const horizonM = aBrakeTick > 1e-6
+        ? Math.max(15, (v * v) / (2 * aBrakeTick) + 10)
+        : 120;
       for (let ds = 2; ds <= horizonM; ds += 2) {
         let lim;
         try {
@@ -572,8 +659,10 @@ export function simulatePathPoses(config, pathM, strideMeters, opts = {}) {
     if (v > targetSpeed + 0.3) {
       v -= brakingForceTick;
     } else if (v > targetSpeed) {
-      v -= FRICTION;
-    } else {
+      // 低速ブレーキもその地点の有効制動を上回らせない。特に制動不能な
+      // 湿潤急降坂で固定の乾燥摩擦を注入しない。
+      v -= dynamicLong ? Math.min(FRICTION, brakingForceTick) : FRICTION;
+    } else if (v < targetSpeed) {
       v += accelTick;
     }
     if (v < 0) v = 0;

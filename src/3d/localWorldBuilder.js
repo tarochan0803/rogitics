@@ -69,7 +69,7 @@ export function estimateBoundsSize(bounds) {
   };
 }
 
-async function loadBuildings(bounds, plateauUrl) {
+async function loadBuildings(bounds, plateauUrl, signal) {
   let buildings = [];
   let osmCount = 0;
   let plateauCount = 0;
@@ -84,10 +84,11 @@ async function loadBuildings(bounds, plateauUrl) {
 
   if (plateauUrl) {
     try {
-      const plateau = await fetchPlateauBuildings(plateauUrl);
+      const plateau = await fetchPlateauBuildings(plateauUrl, { signal });
       plateauCount = plateau.length;
       buildings = mergeFeaturesById(plateau, buildings);
     } catch (e) {
+      if (signal?.aborted) throw e;
       console.warn('[index3d] PLATEAU building fetch failed:', e?.message || e);
     }
   }
@@ -131,7 +132,7 @@ export async function buildLocalWorld(route, {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const { roads, sidewalks, regulations } = await fetchRoadsAndSidewalks(bounds, roadDataSource);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-  const buildingResult = await loadBuildings(bounds, plateauUrl);
+  const buildingResult = await loadBuildings(bounds, plateauUrl, signal);
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const plateauTileset = await resolvePlateauTileset(bounds, signal);
 

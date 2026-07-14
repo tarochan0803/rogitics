@@ -88,7 +88,31 @@ class Handler(SimpleHTTPRequestHandler):
         self._cors_headers()
         self.end_headers()
 
+    def _origin_allowed(self) -> bool:
+        """Reject cross-site POSTs that carry a browser-set Origin header.
+
+        A browser always attaches Origin to cross-origin (and many same-site)
+        POSTs, even though CORS response headers don't stop the request from
+        firing — that's what lets a malicious page trigger drive-by POSTs
+        against this server's side-effecting endpoints. Requests without an
+        Origin header (curl, some same-origin cases, test harnesses) are left
+        untouched for compatibility.
+        """
+        origin = self.headers.get('Origin')
+        if not origin:
+            return True
+        default_allowed = {f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}'}
+        if origin in default_allowed:
+            return True
+        allowed_origins = get_allowed_origins(PORT)
+        if '*' in allowed_origins:
+            return True
+        return origin in allowed_origins
+
     def do_POST(self):
+        if not self._origin_allowed():
+            self.send_error(403)
+            return
         path = urlparse(self.path).path
         if path == '/api/start-yolo':
             self._start_yolo()

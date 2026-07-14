@@ -78,10 +78,6 @@ const ENABLE_EDGE_STAGE = false;
 const ENABLE_FLAT_GROUND = false;
 const FORCE_FLAT_GROUND = false;
 const FLAT_GROUND_FIXED_HEIGHT = 0;
-const AUTODRIVE_LOOKAHEAD_POSE_STEPS = [0, 2, 4, 7, 10, 14];
-const AUTODRIVE_LATERAL_CANDIDATES_M = [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.85, -1.85, 2.3, -2.3];
-const AUTODRIVE_OFFSET_SMOOTH = 0.32;
-const AUTODRIVE_OFFSET_EPS = 0.04;
 const FLAT_GROUND_ALPHA = 0.8;
 const ENABLE_FXAA = false;
 const RENDER_SCALE_CAP = 1.0;
@@ -1594,10 +1590,6 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
   let lastSampledHeight = 0;
   let _collisionCount = 0;
   let _isInDanger = false;
-  let autoDriveOffsetM = 0;
-  let autoDriveTargetOffsetM = 0;
-  let autoDriveAvoidCount = 0;
-  let autoDriveWasOffset = false;
 
   const samplePoseAtProgress = (rawProgress) => {
     const clamped = Math.max(0, Math.min(poses.length - 1, rawProgress));
@@ -1616,13 +1608,14 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
     return { pose, bearingRad, baseIdx, nextIdx };
   };
 
-  const offsetPoseLaterally = (pose, bearingRad, lateralM) => {
-    if (!pose || !Number.isFinite(lateralM) || Math.abs(lateralM) < 1e-6) return pose;
-    return {
-      ...pose,
-      x: pose.x + lateralM * Math.cos(bearingRad),
-      y: pose.y - lateralM * Math.sin(bearingRad)
-    };
+  const assertRouteReplayCoordinates = (renderPose, routePose) => {
+    const coordinateDelta = Math.hypot(
+      renderPose.x - routePose.x,
+      renderPose.y - routePose.y
+    );
+    if (!Number.isFinite(coordinateDelta) || coordinateDelta > 1e-6) {
+      throw new Error('Cesium route replay must render source pose coordinates without lateral offsets.');
+    }
   };
 
   const collisionDangerForPose = (pose) => {
@@ -1651,30 +1644,6 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
     return 0;
   };
 
-  const isAutoDriveOffsetSafe = (offsetM, fromProgress) => {
-    if (!allowCollisionCheck) return true;
-    for (const stepAhead of AUTODRIVE_LOOKAHEAD_POSE_STEPS) {
-      const sample = samplePoseAtProgress(fromProgress + stepAhead);
-      if (!sample) return false;
-      const testPose = offsetPoseLaterally(sample.pose, sample.bearingRad, offsetM);
-      if (collisionDangerForPose(testPose)) return false;
-    }
-    return true;
-  };
-
-  const chooseAutoDriveTargetOffset = (fromProgress) => {
-    if (!allowCollisionCheck) return 0;
-    if (isAutoDriveOffsetSafe(0, fromProgress)) return 0;
-    let best = null;
-    for (const offsetM of AUTODRIVE_LATERAL_CANDIDATES_M) {
-      if (Math.abs(offsetM) < AUTODRIVE_OFFSET_EPS) continue;
-      if (!isAutoDriveOffsetSafe(offsetM, fromProgress)) continue;
-      const score = Math.abs(offsetM) + Math.abs(offsetM - autoDriveTargetOffsetM) * 0.35;
-      if (!best || score < best.score) best = { offsetM, score };
-    }
-    return best ? best.offsetM : autoDriveTargetOffsetM;
-  };
-
   const step = (ts) => {
     if (!poses.length) {
       animId = null;
@@ -1689,21 +1658,8 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
     const sample = samplePoseAtProgress(progress);
     if (!sample) return;
     const { baseIdx, bearingRad } = sample;
-    let p = sample.pose;
-
-    if (allowCollisionCheck) {
-      if ((collisionAccumS + dtS) >= collisionCheckIntervalS || lastDanger === null) {
-        autoDriveTargetOffsetM = chooseAutoDriveTargetOffset(progress);
-      }
-      autoDriveOffsetM += (autoDriveTargetOffsetM - autoDriveOffsetM) * AUTODRIVE_OFFSET_SMOOTH;
-      if (Math.abs(autoDriveOffsetM) < AUTODRIVE_OFFSET_EPS && Math.abs(autoDriveTargetOffsetM) < AUTODRIVE_OFFSET_EPS) {
-        autoDriveOffsetM = 0;
-      }
-      p = offsetPoseLaterally(p, bearingRad, autoDriveOffsetM);
-      const isOffsetNow = Math.abs(autoDriveOffsetM) >= 0.12;
-      if (isOffsetNow && !autoDriveWasOffset) autoDriveAvoidCount++;
-      autoDriveWasOffset = isOffsetNow;
-    }
+    const p = { ...sample.pose };
+    assertRouteReplayCoordinates(p, sample.pose);
 
     const desiredHeading = truckHeadingFromBearingRad(bearingRad);
     const heading = lastHeading == null ? desiredHeading : lerpAngleRad(lastHeading, desiredHeading, headingSmooth);
@@ -1734,6 +1690,33 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
       }
     }
 
+    // A detected obstacle is terminal in the legacy player. Keep the entity at
+    // its last rendered safe route pose; do not render the colliding sample and
+    // do not continue through the solid on later frames.
+    if (p.danger) {
+      if (!_isInDanger) {
+        _collisionCount++;
+        _isInDanger = true;
+      }
+      lastTruckDanger = true;
+      if (truckEntity?.model) {
+        truckEntity.model.color = Cesium.Color.fromCssColorString(TRUCK_DANGER_COLOR);
+      } else if (truckEntity?.box) {
+        truckEntity.box.material = Cesium.Color.fromCssColorString(TRUCK_DANGER_COLOR).withAlpha(0.85);
+        truckEntity.box.outlineColor = Cesium.Color.fromCssColorString(TRUCK_DANGER_OUTLINE);
+      }
+      const poseEl = document.getElementById('map3dPoseCount');
+      const collEl = document.getElementById('map3dCollisionCount');
+      if (poseEl) poseEl.textContent = `${baseIdx + 1} / ${poses.length} / BLOCKED`;
+      if (collEl) {
+        collEl.textContent = _collisionCount;
+        collEl.classList.toggle('ng', true);
+      }
+      try { viewer.scene.requestRender(); } catch (_e) {}
+      animId = null;
+      return;
+    }
+
     // Updated renderPose logic embedded in step to use lastSampledHeight
     if (truckEntity) {
       const height = Math.max(1.5, Number(vehicleConfig?.vehicleHeight ?? 2.2));
@@ -1760,11 +1743,8 @@ export function play3D(simPoses, vehicleConfig, opts = {}) {
     const poseEl = document.getElementById('map3dPoseCount');
     const collEl = document.getElementById('map3dCollisionCount');
     if (poseEl) {
-      const offsetText = Math.abs(autoDriveOffsetM) >= 0.12
-        ? ` / AUTO ${autoDriveOffsetM > 0 ? '+' : ''}${autoDriveOffsetM.toFixed(1)}m`
-        : '';
-      const avoidText = autoDriveAvoidCount ? ` / avoid ${autoDriveAvoidCount}` : '';
-      poseEl.textContent = `${baseIdx + 1} / ${poses.length}${offsetText}${avoidText}`;
+      const blockedText = p.danger ? ' / BLOCKED' : '';
+      poseEl.textContent = `${baseIdx + 1} / ${poses.length}${blockedText}`;
     }
     if (collEl) {
       if (p.danger && !_isInDanger) {

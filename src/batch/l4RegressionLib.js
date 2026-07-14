@@ -105,9 +105,34 @@ function collectCandidates(world, { minLenM = 60, minWidthM = 3.0 } = {}) {
   return cands;
 }
 
+function completionToleranceM(totalM) {
+  return Math.max(2, totalM * 0.02);
+}
+
+function isNearGoalCompletion({ safety, drive, candidateLengthM }) {
+  const progressM = Number(safety?.progressM ?? drive?.progressM);
+  const totalM = Number(safety?.routeTotalM ?? drive?.totalM ?? candidateLengthM);
+  return Number.isFinite(progressM)
+    && Number.isFinite(totalM)
+    && totalM > 0
+    && progressM >= totalM - completionToleranceM(totalM)
+    && typeof drive?.playing === 'boolean'
+    && drive.playing === false;
+}
+
+function classifyRouteOutcome({ safety, drive, candidateLengthM, timedOut }) {
+  const mrmReason = safety?.mrmStop?.reason || null;
+  if (mrmReason === 'safety_invariant_violation') return 'FAIL_MONITOR';
+  if (mrmReason) return 'MRM_OK';
+  if (safety?.status === 'VIOLATION') return 'FAIL_MONITOR';
+  if (isNearGoalCompletion({ safety, drive, candidateLengthM })) return 'PASS';
+  if (timedOut) return 'TIMEOUT';
+  return 'FAIL_INCOMPLETE';
+}
+
 /**
  * 1ルート実行: ①経路確定→②compiled world読込→③再生→Safety/Phase4集計。
- * 判定: PASS(進捗70%以上) / MRM_OK(理由コード付き停止) / FAIL_MONITOR / FAIL_INCOMPLETE
+ * PASSには、実際の再生完了シグナルと終端近傍の進捗の両方が必要。
  */
 async function runRoute(page, worldFileUrl, cand, { timeoutS = 90, traceDir, worldHash } = {}) {
   await page.evaluate((route) => window.index3DSetRoute(route), cand.route);
@@ -118,36 +143,42 @@ async function runRoute(page, worldFileUrl, cand, { timeoutS = 90, traceDir, wor
   await page.evaluate(() => window.index3DPlay());
 
   let last = null;
-  let stableFor = 0;
-  let prevTick = -1;
+  let driveLast = null;
+  let completed = false;
+  let terminal = false;
   const deadline = Date.now() + timeoutS * 1000;
   while (Date.now() < deadline) {
     await sleep(1000);
-    last = await page.evaluate(() => window.index3DGetSafetyMetrics());
-    if (last?.status === 'MRM_STOP' || last?.status === 'VIOLATION') break;
-    if ((last?.tick || 0) === prevTick) {
-      stableFor += 1;
-      // 「tick停滞=再生完了」はゴール圏内(進捗70%+)でのみ即断する。
-      // 長時間チェーンではヘッドレスのrAFが数秒飢餓になることがあり、
-      // 途中停滞を4秒で完了扱いすると偽FAIL_INCOMPLETEになる（i-1281実測）。
-      const nearGoal = Number(last?.progressM) >= Number(last?.routeTotalM) * 0.7;
-      if (stableFor >= (nearGoal ? 4 : 20)) break;
-    } else {
-      stableFor = 0;
-      prevTick = last?.tick || 0;
+    const snapshot = await page.evaluate(() => ({
+      safety: window.index3DGetSafetyMetrics?.() || null,
+      drive: window.index3DGetAutonomyDriveMetrics?.()
+        || window.index3DGetStats?.()?.phase4
+        || null
+    }));
+    last = snapshot.safety;
+    driveLast = snapshot.drive;
+    if (last?.status === 'MRM_STOP' || last?.status === 'MRM_FAILED' || last?.status === 'VIOLATION') {
+      terminal = true;
+      break;
+    }
+    completed = isNearGoalCompletion({ safety: last, drive: driveLast, candidateLengthM: cand.lenM });
+    if (completed) {
+      terminal = true;
+      break;
     }
   }
-  const phase4 = await page.evaluate(() => window.index3DGetStats()?.phase4 || null);
+  const timedOut = !terminal && Date.now() >= deadline;
+  const phase4 = driveLast || await page.evaluate(() => window.index3DGetStats()?.phase4 || null);
 
   const mrmReason = last?.mrmStop?.reason || null;
-  const progressM = Number(last?.progressM) || 0;
-  const totalM = Number(last?.routeTotalM) || cand.lenM;
-  let verdict;
-  if (mrmReason === 'safety_invariant_violation') verdict = 'FAIL_MONITOR';
-  else if (mrmReason) verdict = 'MRM_OK';
-  else if (last?.status === 'VIOLATION') verdict = 'FAIL_MONITOR';
-  else if (progressM >= totalM * 0.7) verdict = 'PASS';
-  else verdict = 'FAIL_INCOMPLETE';
+  const progressM = Number(last?.progressM ?? phase4?.progressM) || 0;
+  const totalM = Number(last?.routeTotalM ?? phase4?.totalM) || cand.lenM;
+  const verdict = classifyRouteOutcome({
+    safety: last,
+    drive: phase4,
+    candidateLengthM: cand.lenM,
+    timedOut
+  });
 
   let traceFile = null;
   if (verdict !== 'PASS' && verdict !== 'MRM_OK' && traceDir) {
@@ -166,6 +197,9 @@ async function runRoute(page, worldFileUrl, cand, { timeoutS = 90, traceDir, wor
     totalM: Math.round(totalM),
     ticks: last?.tick || 0,
     status: last?.status || null,
+    drivePlaying: typeof phase4?.playing === 'boolean' ? phase4.playing : null,
+    completionEvidence: isNearGoalCompletion({ safety: last, drive: phase4, candidateLengthM: cand.lenM }),
+    timedOut,
     mrmReason,
     firstViolation: last?.firstViolation?.violations?.[0]?.type || null,
     minAllowedKmh: phase4?.minAllowedSpeedKmh ?? null,
@@ -183,5 +217,8 @@ module.exports = {
   widthBandOf,
   gradeBandOf,
   collectCandidates,
+  completionToleranceM,
+  isNearGoalCompletion,
+  classifyRouteOutcome,
   runRoute
 };

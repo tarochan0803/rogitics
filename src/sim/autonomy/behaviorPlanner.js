@@ -448,8 +448,9 @@ export function buildAutonomyDriveReport({
     // コンパイル済みワールドの demGradeMedianPct は絶対値（進行方向の上り/下り情報を持たない）で
     // 焼き込まれるため、制動側は最悪ケース＝下り(負符号)として渡し、停止距離を保守的に見積もる。
     // 勾配情報の無い道路（オンライン取得等）は 0=平坦。路面は vehicleConfig.surfaceCondition。
+    const brakeGradePct = grade.gradePct != null ? -Math.abs(grade.gradePct) : 0;
     const brakeDecelMSS = effectiveBrakeDecelMSS({
-      gradePct: grade.gradePct != null ? -Math.abs(grade.gradePct) : 0,
+      gradePct: brakeGradePct,
       vehicleConfig
     });
     const headingDeg = bearingAt(line, s, totalM);
@@ -558,7 +559,8 @@ export function buildAutonomyDriveReport({
     if (firstBlock) {
       const stopClearanceM = Number(firstBlock.distanceM) - safeStopM;
       // decelMSS 引数（後方互換で受ける）ではなく、勾配・路面連動の brakeDecelMSS で停止距離を評価。
-      obstacleLimitMS = stopClearanceM <= 0
+      // 制動能力ゼロのときは停止距離を捏造せず、その障害物へ進入しない STOP とする。
+      obstacleLimitMS = brakeDecelMSS <= 0 || stopClearanceM <= 0
         ? 0
         : Math.min(cruiseMS, Math.sqrt(Math.max(0, 2 * brakeDecelMSS * stopClearanceM)));
     }
@@ -587,6 +589,7 @@ export function buildAutonomyDriveReport({
       roadConfidence: round(roadConfidence, 3),
       confidenceSpeedFactor: round(confidenceFactor, 3),
       gradePct: grade.gradePct != null ? round(grade.gradePct, 2) : null,
+      brakeGradePct: round(brakeGradePct, 2),
       gradeSpeedFactor: round(grade.factor, 3),
       brakeDecelMSS: round(brakeDecelMSS, 2),
       widthMarginM: narrow.marginM != null ? round(narrow.marginM, 2) : null,

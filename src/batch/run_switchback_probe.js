@@ -13,7 +13,7 @@
  *     maneuvers: [{ source, sM, lengthM, headingSweepDeg, gearChanges, poseCount, accepted, rejectReason }],
  *     count
  *   }
- * フックが未定義の場合（未実装段階）は [SKIP] を出して exit 0 とし、本プローブが壊れないようにする。
+ * 必須フックが未定義、デモが完了しない、または切り返し記録が空/不正なら失敗する。
  *
  * run_index3d_smoke.js / l4RegressionLib.js のハーネスパターンを踏襲。
  */
@@ -64,29 +64,44 @@ function getChromeExecutablePath() {
   }
 }
 
-// 再生完了/MRM停止/タイムアウトのいずれかまで index3DGetSafetyMetrics() を1秒ポーリングする
+function completionToleranceM(totalM) {
+  return Math.max(2, totalM * 0.02);
+}
+
+// 実際の再生完了/MRM停止/タイムアウトまで、Safety と drive の両方をポーリングする。
 async function pollUntilSettled(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let last = null;
-  let stableFor = 0;
-  let prevTick = -1;
+  let safety = null;
+  let drive = null;
+  let completed = false;
   while (Date.now() < deadline) {
-    await sleep(1000);
-    last = await page.evaluate(() => window.index3DGetSafetyMetrics?.() || null);
-    if (!last) continue;
-    if (last.status === 'MRM_STOP' || last.status === 'VIOLATION') break;
-    const tick = Number(last.tick) || 0;
-    if (tick === prevTick) {
-      stableFor += 1;
-      // ゴール圏内(進捗70%+)でのtick停滞は再生完了とみなす（l4RegressionLib.runRouteと同じ考え方）
-      const nearGoal = Number(last.progressM || 0) >= Number(last.routeTotalM || 0) * 0.7;
-      if (stableFor >= (nearGoal ? 4 : 20)) break;
-    } else {
-      stableFor = 0;
-      prevTick = tick;
-    }
+    await sleep(500);
+    const snapshot = await page.evaluate(() => ({
+      safety: window.index3DGetSafetyMetrics?.() || null,
+      drive: window.index3DGetAutonomyDriveMetrics?.()
+        || window.index3DGetStats?.()?.phase4
+        || null
+    }));
+    safety = snapshot.safety;
+    drive = snapshot.drive;
+    if (safety?.status === 'MRM_STOP' || safety?.status === 'MRM_FAILED' || safety?.status === 'VIOLATION') break;
+    const progressM = Number(safety?.progressM ?? drive?.progressM);
+    const totalM = Number(safety?.routeTotalM ?? drive?.totalM);
+    completed = Number.isFinite(progressM)
+      && Number.isFinite(totalM)
+      && totalM > 0
+      && progressM >= totalM - completionToleranceM(totalM)
+      && typeof drive?.playing === 'boolean'
+      && drive.playing === false;
+    if (completed) break;
   }
-  return last;
+  return {
+    safety,
+    drive,
+    completed,
+    timedOut: !completed && safety?.status !== 'MRM_STOP' && safety?.status !== 'MRM_FAILED' && safety?.status !== 'VIOLATION'
+      && Date.now() >= deadline
+  };
 }
 
 async function main() {
@@ -142,42 +157,48 @@ async function main() {
       return routeVisible || canvasVisible;
     }, { timeout: opts.timeoutMs });
 
-    const hasDemo = await page.evaluate(() => typeof window.index3DRunDemo === 'function');
-    if (hasDemo) {
-      console.log('[INFO] window.index3DRunDemo() でデモワールドをロードします');
-      await page.evaluate(() => window.index3DRunDemo());
-      await page.waitForFunction(() => {
-        const stats = window.index3DGetStats?.();
-        return !!stats && stats.routePoints >= 2 && stats.worldLoaded === true;
-      }, { timeout: opts.timeoutMs });
-    } else {
-      console.log('[INFO] window.index3DRunDemo 未定義 - デモロードをスキップします');
+    const missingHooks = await page.evaluate(() => [
+      ['window.index3DRunDemo', typeof window.index3DRunDemo],
+      ['window.index3DPlay', typeof window.index3DPlay],
+      ['window.index3DGetRecoveryDebug', typeof window.index3DGetRecoveryDebug]
+    ].filter(([, type]) => type !== 'function').map(([name]) => name));
+    if (missingHooks.length) {
+      throw new Error(`required switchback hook(s) missing: ${missingHooks.join(', ')}; load index3D_V2.0.html with the current batch contract`);
     }
 
-    const hasPlay = await page.evaluate(() => typeof window.index3DPlay === 'function');
-    if (hasPlay) {
-      console.log('[INFO] window.index3DPlay() で再生を開始します');
-      await page.evaluate(() => window.index3DPlay());
-    } else {
-      console.log('[INFO] window.index3DPlay 未定義 - 再生をスキップします');
-    }
+    console.log('[INFO] window.index3DRunDemo() でデモワールドをロードします');
+    await page.evaluate(() => window.index3DRunDemo());
+    await page.waitForFunction(() => {
+      const stats = window.index3DGetStats?.();
+      return !!stats && stats.routePoints >= 2 && stats.worldLoaded === true;
+    }, { timeout: opts.timeoutMs });
 
-    const last = await pollUntilSettled(page, opts.timeoutMs);
-    const progressM = last?.progressM ?? null;
-    const routeTotalM = last?.routeTotalM ?? null;
+    console.log('[INFO] window.index3DPlay() で再生を開始します');
+    await page.evaluate(() => window.index3DPlay());
+
+    const settled = await pollUntilSettled(page, opts.timeoutMs);
+    const last = settled.safety;
+    const drive = settled.drive;
+    const progressM = last?.progressM ?? drive?.progressM ?? null;
+    const routeTotalM = last?.routeTotalM ?? drive?.totalM ?? null;
     const mrmReason = last?.mrmStop?.reason ?? null;
     console.log(`[INFO] 再生終了: progressM=${progressM} / routeTotalM=${routeTotalM} status=${last?.status ?? 'null'} mrmReason=${mrmReason}`);
     summary.progressM = progressM;
     summary.routeTotalM = routeTotalM;
     summary.status = last?.status ?? null;
     summary.mrmReason = mrmReason;
+    summary.drivePlaying = typeof drive?.playing === 'boolean' ? drive.playing : null;
+    summary.completed = settled.completed;
+    summary.timedOut = settled.timedOut;
 
-    const hasRecoveryHook = await page.evaluate(() => typeof window.index3DGetRecoveryDebug === 'function');
-    if (!hasRecoveryHook) {
-      console.log('[SKIP] window.index3DGetRecoveryDebug 未定義（recoveryデバッグフック未実装のためプローブをスキップ）');
-      summary.outcome = 'skip-hook-undefined';
-      console.log(JSON.stringify(summary));
-      return;
+    if (settled.timedOut) {
+      throw new Error(`switchback demo timed out after ${opts.timeoutMs}ms at ${progressM ?? '?'}m/${routeTotalM ?? '?'}m; inspect page readiness, playback, and safety metrics`);
+    }
+    if (mrmReason || last?.status === 'MRM_STOP' || last?.status === 'MRM_FAILED' || last?.status === 'VIOLATION') {
+      throw new Error(`switchback demo completed with safety stop/violation: status=${last?.status ?? 'null'}, reason=${mrmReason || 'none'}`);
+    }
+    if (!settled.completed) {
+      throw new Error(`switchback demo did not provide actual completion: progress=${progressM ?? '?'}m/${routeTotalM ?? '?'}m, playing=${summary.drivePlaying}, status=${summary.status}`);
     }
 
     const recovery = await page.evaluate(() => window.index3DGetRecoveryDebug());
@@ -186,20 +207,53 @@ async function main() {
     for (const m of maneuvers) {
       console.log(`[INFO]   source=${m?.source ?? '?'} sM=${m?.sM ?? '?'} lengthM=${m?.lengthM ?? '?'} `
         + `headingSweepDeg=${m?.headingSweepDeg ?? '?'} gearChanges=${m?.gearChanges ?? '?'} `
-        + `poseCount=${m?.poseCount ?? '?'} accepted=${m?.accepted ?? '?'} rejectReason=${m?.rejectReason ?? ''}`);
+        + `poseCount=${m?.poseCount ?? '?'} accepted=${m?.accepted ?? '?'} rejectReason=${m?.rejectReason ?? ''} `
+        + `maxFrameStepM=${m?.maxFrameStepM ?? '-'} gearEntrySpeed=${m?.maxGearChangeEntrySpeedMS ?? '-'}`);
     }
     summary.maneuverCount = maneuvers.length;
     summary.reportCount = recovery?.count ?? null;
 
     if (maneuvers.length === 0) {
-      console.log('[INFO] switchback未発火（デモルートでK-turn/recoveryが起きなかった）- アサートはスキップします');
-      summary.outcome = 'no-maneuvers';
-      console.log(JSON.stringify(summary));
-      return;
+      throw new Error('switchback demo produced no maneuver records; expected at least one known-demo recovery');
     }
 
-    const accepted = maneuvers.filter((m) => m && m.accepted);
+    assertCheck(Number.isInteger(recovery?.count), 'recovery.count は整数');
+    assertCheck(recovery.count === maneuvers.length,
+      `recovery.count(${recovery?.count}) === maneuvers.length(${maneuvers.length})`);
+    if (!Number.isInteger(recovery?.count) || recovery.count !== maneuvers.length) {
+      throw new Error(`recovery count mismatch: report.count=${recovery?.count}, maneuvers.length=${maneuvers.length}`);
+    }
+
+    const hasFieldTypes = maneuvers.every((m, i) => {
+      const numberFields = ['sM', 'lengthM', 'headingSweepDeg', 'gearChanges', 'poseCount'];
+      const numeric = numberFields.every((key) => typeof m?.[key] === 'number' && Number.isFinite(m[key]));
+      const valid = typeof m?.source === 'string' && m.source.length > 0
+        && numeric
+        && typeof m?.accepted === 'boolean'
+        && (m.rejectReason === null || typeof m.rejectReason === 'string');
+      if (!valid) console.log(`[ASSERT]   invalid field types at maneuver[${i}]: ${JSON.stringify(m)}`);
+      return valid;
+    });
+    assertCheck(hasFieldTypes, '全maneuverに契約フィールドと厳密な型がある');
+    if (!hasFieldTypes) throw new Error('recovery maneuver record has missing/invalid field types; see maneuver index above');
+
+    const accepted = maneuvers.filter((m) => m && m.accepted === true);
     summary.acceptedCount = accepted.length;
+    const acceptedHybrid = accepted.filter((m) => m.source === 'hybrid-astar');
+    assertCheck(acceptedHybrid.length >= 1, 'known demo は accepted Hybrid A* を1件以上含む');
+    if (acceptedHybrid.length < 1) {
+      throw new Error(`known demo produced no accepted Hybrid A* maneuver; accepted sources=${accepted.map((m) => m.source).join(',') || 'none'}`);
+    }
+
+    const playbackPhysicsOk = accepted.every((m) =>
+      Number.isFinite(Number(m.maxFrameStepM))
+      && Number(m.maxFrameStepM) <= 0.35
+      && Number.isFinite(Number(m.maxGearChangeEntrySpeedMS))
+      && Number(m.maxGearChangeEntrySpeedMS) <= 0.15);
+    assertCheck(playbackPhysicsOk, 'accepted maneuver は連続移動かつ停止後にギア切替');
+    if (!playbackPhysicsOk) {
+      throw new Error(`nonphysical maneuver replay: ${JSON.stringify(accepted)}`);
+    }
 
     const isSaneManeuver = (m) => Number.isFinite(m?.headingSweepDeg) && m.headingSweepDeg <= MAX_HEADING_SWEEP_DEG
       && Number.isFinite(m?.lengthM) && m.lengthM <= MAX_MANEUVER_LENGTH_M;

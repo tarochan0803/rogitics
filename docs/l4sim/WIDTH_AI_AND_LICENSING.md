@@ -72,6 +72,8 @@
 ## 4. 実装TODO（商用ビルドまで）
 1. [x] 商用既定で Street View/YOLO を無効化し、派生結果の永続キャッシュも禁止
 2. [x] Ultralytics 依存を requirements-yolo.txt ごと optional 隔離
+   ※ `server/yolov8n.pt` / `yolov8n-seg.pt` と `/api/start-yolo` 起動経路がリポジトリに
+   残存（開発専用）。商用パッケージング時にはこれらを除外すること。
 3. [x] 地図画面へ出典クレジットを常設（GSI / OSM / PLATEAU）
 4. [ ] 道路面マスク教師データを数百枚へ拡充（ラベルサーバ運用）
 5. [ ] 道路DB納品形態を取る場合は ODbL share-alike の法務確認

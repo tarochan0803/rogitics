@@ -23,9 +23,10 @@ function parseArgs(argv) {
     outDir: DEFAULT_OUT,
     base: 'http://127.0.0.1:8099',
     vehicles: DEFAULT_VEHICLES,
+    routeId: null,
     limit: Infinity,
     timeoutS: 90,
-    strict: false
+    strict: true
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -34,9 +35,11 @@ function parseArgs(argv) {
     else if (a === '--out') opts.outDir = path.resolve(next());
     else if (a === '--base') opts.base = next();
     else if (a === '--vehicles') opts.vehicles = next().split(',').map((s) => s.trim()).filter(Boolean);
+    else if (a === '--route-id') opts.routeId = next();
     else if (a === '--limit') opts.limit = Math.max(1, parseInt(next(), 10) || 1);
     else if (a === '--timeout') opts.timeoutS = Number(next()) || opts.timeoutS;
     else if (a === '--strict') opts.strict = true;
+    else if (a === '--no-strict') opts.strict = false;
     else if (a === '--help' || a === '-h') {
       printUsage();
       process.exit(0);
@@ -55,9 +58,11 @@ function printUsage() {
     'Options:',
     '  --base <url>             App URL. Default http://127.0.0.1:8099',
     '  --vehicles <a,b,c>       Vehicle presets. Default 2t/3t/4t/10t',
+    '  --route-id <id>          Run one exact route record',
     '  --limit <N>              Max route records to run',
     '  --timeout <sec>          Per-run timeout',
-    '  --strict                 Exit 1 when label conflicts are found'
+    '  --strict                 Fail on label conflicts (default)',
+    '  --no-strict              Allow label conflicts for exploratory runs'
   ].join('\n'));
 }
 
@@ -102,6 +107,9 @@ function summarizeRouteLevel(results) {
     inferredPassable: { ok: 0, conflict: 0 },
     weakNegative: { supports: 0, review: 0 },
     failMonitor: 0,
+    timeouts: 0,
+    incomplete: 0,
+    errors: 0,
     pageErrors: 0
   };
   for (const r of results) {
@@ -116,6 +124,9 @@ function summarizeRouteLevel(results) {
       else summary.weakNegative.review++;
     }
     if (r.verdict === 'FAIL_MONITOR') summary.failMonitor++;
+    if (r.verdict === 'TIMEOUT') summary.timeouts++;
+    if (r.verdict === 'FAIL_INCOMPLETE') summary.incomplete++;
+    if (r.verdict === 'ERROR' || r.comparison === 'RUN_ERROR') summary.errors++;
     summary.pageErrors += Array.isArray(r.pageErrors) ? r.pageErrors.length : 0;
   }
   return summary;
@@ -134,13 +145,19 @@ function summarizeSiteLevel(results) {
         anyPass: false,
         anyRunError: false,
         anyFailMonitor: false,
+        blockingVerdicts: new Set(),
         pageErrors: 0
       });
     }
     const g = groups.get(key);
     g.runs.push(r);
     g.anyPass = g.anyPass || r.verdict === 'PASS';
-    g.anyRunError = g.anyRunError || r.verdict === 'ERROR' || r.comparison === 'RUN_ERROR';
+    if (['ERROR', 'TIMEOUT', 'FAIL_MONITOR', 'FAIL_INCOMPLETE', 'MRM_OK'].includes(r.verdict)
+      || r.comparison === 'RUN_ERROR') {
+      g.blockingVerdicts.add(r.verdict || 'RUN_ERROR');
+    }
+    g.anyRunError = g.anyRunError || r.verdict === 'ERROR'
+      || r.verdict === 'TIMEOUT' || r.comparison === 'RUN_ERROR';
     g.anyFailMonitor = g.anyFailMonitor || r.verdict === 'FAIL_MONITOR';
     g.pageErrors += Array.isArray(r.pageErrors) ? r.pageErrors.length : 0;
   }
@@ -151,32 +168,42 @@ function summarizeSiteLevel(results) {
     inferredPassable: { ok: 0, conflict: 0 },
     weakNegative: { supports: 0, review: 0 },
     runErrors: 0,
+    failMonitor: 0,
+    timeouts: 0,
+    incomplete: 0,
     pageErrors: 0
   };
   for (const g of groups.values()) {
+    const hasBlockingRun = g.blockingVerdicts.size > 0;
+    const effectivePass = g.anyPass && !hasBlockingRun;
     let comparison = 'NO_LABEL';
     if (g.label === 'OBSERVED_POSITIVE') {
-      comparison = g.anyPass ? 'OK' : 'FALSE_NEGATIVE';
-      if (g.anyPass) summary.observedPositive.ok++;
+      comparison = effectivePass ? 'OK' : 'FALSE_NEGATIVE';
+      if (effectivePass) summary.observedPositive.ok++;
       else summary.observedPositive.falseNegative++;
     } else if (g.label === 'INFERRED_PASSABLE') {
-      comparison = g.anyPass ? 'OK_INFERRED' : 'INFERRED_CONFLICT';
-      if (g.anyPass) summary.inferredPassable.ok++;
+      comparison = effectivePass ? 'OK_INFERRED' : 'INFERRED_CONFLICT';
+      if (effectivePass) summary.inferredPassable.ok++;
       else summary.inferredPassable.conflict++;
     } else if (g.label === 'WEAK_NEGATIVE') {
-      comparison = g.anyPass ? 'WEAK_CONFLICT_REVIEW' : 'SUPPORTS_WEAK_NEGATIVE';
-      if (g.anyPass) summary.weakNegative.review++;
+      comparison = effectivePass ? 'WEAK_CONFLICT_REVIEW' : 'SUPPORTS_WEAK_NEGATIVE';
+      if (effectivePass) summary.weakNegative.review++;
       else summary.weakNegative.supports++;
     }
     if (g.anyRunError) summary.runErrors++;
+    if (g.blockingVerdicts.has('FAIL_MONITOR')) summary.failMonitor++;
+    if (g.blockingVerdicts.has('TIMEOUT')) summary.timeouts++;
+    if (g.blockingVerdicts.has('FAIL_INCOMPLETE')) summary.incomplete++;
     summary.pageErrors += g.pageErrors;
     records.push({
       pointId: g.pointId,
       vehicle: g.vehicle,
       label: g.label,
       comparison,
-      anyPass: g.anyPass,
+      anyPass: effectivePass,
+      observedPass: g.anyPass,
       anyFailMonitor: g.anyFailMonitor,
+      blockingVerdicts: [...g.blockingVerdicts].sort(),
       runCount: g.runs.length,
       bestVerdicts: [...new Set(g.runs.map((r) => r.verdict))]
     });
@@ -192,7 +219,10 @@ async function main() {
     return 2;
   }
   const payload = JSON.parse(fs.readFileSync(routesFile, 'utf8'));
-  const routes = (payload.routes || []).slice(0, Number.isFinite(opts.limit) ? opts.limit : undefined);
+  const selectedRoutes = opts.routeId
+    ? (payload.routes || []).filter((route) => route?.id === opts.routeId)
+    : (payload.routes || []);
+  const routes = selectedRoutes.slice(0, Number.isFinite(opts.limit) ? opts.limit : undefined);
   if (!routes.length) throw new Error('routes file has no route records');
   fs.mkdirSync(opts.outDir, { recursive: true });
 
@@ -296,11 +326,28 @@ async function main() {
   console.log(`saved: ${outFile}`);
   const hasConflicts = siteLevel.summary.observedPositive.falseNegative > 0
     || siteLevel.summary.inferredPassable.conflict > 0
+    || routeLevel.observedPositive.falseNegative > 0
+    || routeLevel.inferredPassable.conflict > 0
     || routeLevel.failMonitor > 0;
-  return routeLevel.pageErrors === 0 && siteLevel.summary.runErrors === 0 && (!opts.strict || !hasConflicts) ? 0 : 1;
+  return routeLevel.pageErrors === 0
+    && siteLevel.summary.runErrors === 0
+    && siteLevel.summary.failMonitor === 0
+    && siteLevel.summary.timeouts === 0
+    && siteLevel.summary.incomplete === 0
+    && (!opts.strict || !hasConflicts) ? 0 : 1;
 }
 
-main().then((code) => process.exit(code)).catch((err) => {
-  console.error(err.stack || err.message || err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().then((code) => process.exit(code)).catch((err) => {
+    console.error(err.stack || err.message || err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseArgs,
+  labelFor,
+  compare,
+  summarizeRouteLevel,
+  summarizeSiteLevel
+};

@@ -1,5 +1,20 @@
 # 道路規制データ更新運用
 
+## アクセス方法
+
+`web_server.py` は既定で **127.0.0.1:8080 のみ** を待ち受ける（外部インターフェースには
+バインドしない）。SSH先のホストで動いているサーバーへ手元のブラウザから
+`http://127.0.0.1:18080/...` のような別ポートでアクセスしたい場合は、サーバー側で
+18080番を待ち受けているわけではなく、SSHクライアント側でポートフォワードを張る必要がある。
+
+```bash
+ssh -L 18080:127.0.0.1:8080 <host>
+```
+
+上記のようにトンネルを張ったうえで、手元のブラウザから `http://127.0.0.1:18080/index8.2.html`
+を開く。トンネルを張らずに18080番へアクセスしても、サーバー側では何も待ち受けていないため
+接続できない。
+
 ## 更新構成
 
 `web_server.py` の起動中は `RegulationRefreshService` がバックグラウンドで動作する。
@@ -63,6 +78,15 @@ systemctl --user status logistics-os-live.service
 systemctl --user restart logistics-os-live.service
 ```
 
+旧システムサービス `logistics-os.service`（`/etc/systemd/system/logistics-os.service`、
+system側）は再起動ループの原因になっていたため、現在は disabled かつ inactive にしてある。
+もし何らかの理由で再度 enabled/active になっていた場合は、`logistics-os-live.service`
+（ユーザーsystemd）と二重起動してポート競合を起こすため、以下で無効化すること。
+
+```bash
+sudo systemctl disable --now logistics-os.service
+```
+
 ## コンパイル済みワールド
 
 - `compile_world.js` の規制Overpassキャッシュは15分、建物は6時間。
@@ -95,3 +119,18 @@ python3 -m unittest discover -s server -p 'test_*.py' -v
 npm --prefix src/batch run regulation:detail
 node src/batch/compile_world.js --selfcheck
 ```
+
+`regulation_refresh` 周りだけを単体で検証する場合は、プロジェクトルートで以下を実行する
+（`server` パッケージ配下のモジュールを相対importしているため、`server/` ディレクトリ内から
+直接実行するとimportに失敗する）。
+
+```bash
+python3 -m server.test_regulation_refresh
+```
+
+## 開発専用機能について
+
+`/api/start-yolo`（`web_server.py`）と `server/yolov8n.pt` / `server/yolov8n-seg.pt` は
+道路幅AI検証など開発・検証用途のみを想定している。これらはUltralytics YOLO
+（AGPL-3.0ライセンス）に依存するため、商用ビルド・納品物には含めないこと。詳細は
+`docs/l4sim/WIDTH_AI_AND_LICENSING.md` を参照。

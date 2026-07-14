@@ -1,5 +1,38 @@
 # L4SIM 作業ログ（毎作業ごとに追記: やったこと / 次やること）
 
+## 2026-07-13 (55) 規制自動更新サービスの2バグ修正（LKG鮮度優先 / status非ブロック化）
+### やったこと
+- **バグ1（実環境で発生中）**: `regulation_refresh.py:_source_view()` が `lastError` を鮮度より
+  優先し、fresh な last-known-good があっても直近1回のOverpassタイムアウトで `state=error` →
+  `_overall()=error` → 判定側が UNKNOWN（取得不能・要確認）へ転落していた。state 導出を
+  「LKGの鮮度を第一」に変更: LKG無し+error→"error"（従来通り）／ LKGあり(fresh)は error でも
+  state="fresh" とし新フィールド `degraded:true` と `error` メッセージで可視化／ stale・expired は
+  鮮度どおり（エラー継続で自然に stale へエスカレーション）／ reviewRequired・notConfigured の
+  "stale" 化は従来維持。`_overall()` は degraded な fresh を悪化させない不変条件をコメントで明示
+  （既存ロジックで条件成立、挙動不変）。
+- **バグ2（status ロック競合）**: `refresh()`/`run_scheduled_once()` が `self._lock` 保持のまま
+  ネットワークI/O（最大~90秒）を行い、`status()` の鮮度ポーリングをブロックしていた。案Bを採用し
+  `status()` をロックレス化。index.json は atomic write なのでファイル読取→view計算のみで整合が保て、
+  in-memory 登録副作用（ローカルのみ・未保存）はそのまま。refresh の直列化は `_refresh_lock` が担保。
+- **テスト**: `test_regulation_refresh.py` に冒頭 `sys.path` 自己挿入を追加し、
+  `python3 -m server.test_regulation_refresh` と `python3 server/test_regulation_refresh.py` の
+  両方で走るよう修復。新規4件追加（fresh LKG+一過性error→fresh/degraded/overall検証・
+  LKG無し+error→error・error継続でstale閾値超過→stale・status非ブロック(threading.Eventで決定論)）。
+  既存 `test_failed_refresh...` の1アサーション（バグ挙動 state=="error" を固定化していた）を
+  修正後挙動 state=="fresh"+degraded へ更新。編集は `regulation_refresh.py` と
+  `test_regulation_refresh.py` のみ（web_server.py/docs は別作業者担当のため不変更）。
+### 検証
+- `python3 -m server.test_regulation_refresh`: 12 tests PASS（既存8+追加4）。
+- `python3 server/test_regulation_refresh.py`: 12 tests PASS（単体起動修復）。
+- `node src/batch/run_regulation_detail_check.js`: PASS 維持。
+- 実サービス: `logistics-os-live.service` 再起動後、`index3D_V2.0.html` が HTTP 200。
+  live status: osm `state:"error"→"fresh"`（degraded:true、error にタイムアウト文言を保持、
+  LKG 83要素・freshness fresh）、overall `"error"→"stale"`（jartic notConfigured 由来の意図的
+  stale＝WARNINGのfail-open。OSMの一過性errorはもはや overall を悪化させない）。
+### 残り
+- jartic が `notConfigured` の間は overall が構造的に "stale" 止まり（意図的 fail-open）。真に
+  "fresh" にするには JARTIC/Jシステムの本設定が前提（別タスク）。
+
 ## 2026-07-13 (54) 道路規制の自動更新・鮮度管理・fail-safeを実装
 ### やったこと
 - Solで更新契約を設計し、Terraがサーバー更新/LKG、Lunaが鮮度UIを実装。統合側で実データ投入と
